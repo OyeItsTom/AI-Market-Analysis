@@ -153,7 +153,9 @@ class TestProvenance:
 
     def test_a_row_claiming_another_source_is_rejected(self, store, bars):
         store.write(bars)
-        self._tamper(store, (",test\n", ",yfinance\n"))
+        # NB: rows now end with ",<source>,<price_basis>" since Phase 2 added
+        # the self-describing basis column. The assertion is unchanged.
+        self._tamper(store, (",test,raw\n", ",yfinance,raw\n"))
         with pytest.raises(StorageError, match="provenance"):
             store.read(KEY)
 

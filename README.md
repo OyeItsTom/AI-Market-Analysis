@@ -10,9 +10,10 @@ An educational, evidence-driven quantitative market-research and
 ## Status
 
 **Phase 1 — Market Data Foundation: implemented.**
+**Phase 2 — Research data semantics + feature engine: implemented.**
 
-Later phases (features, strategies, backtesting, evaluation, risk, signals,
-paper trading, dashboard) are not implemented yet.
+Later phases (strategies, backtesting, evaluation, risk, signals, paper
+trading, dashboard) are not implemented yet.
 
 ## Target architecture
 
@@ -33,12 +34,27 @@ src/data/
 ├── normalization.py     vendor records → MarketBar
 ├── validation.py        per-bar and per-series validation rules
 ├── storage.py           CsvBarStore — local CSV cache under data/raw/
+├── series.py            BarSeries + PriceBasis — the safe research unit
+├── corporate_actions.py splits and cash dividends
+├── adjustment.py        explicit raw → adjusted transform
+├── sessions.py          gap contract (exchange calendar DEFERRED)
 └── providers/
     ├── yahoo.py         yfinance adapter (development / fallback source)
-    └── alpaca.py        architectural stub for Phase 2
+    └── alpaca.py        architectural stub
+
+src/features/            pure feature functions over BarSeries
+├── base.py              FeatureSeries, warm-up and timing semantics
+├── returns.py           simple and log returns
+├── trend.py             SMA, EMA
+├── momentum.py          Wilder RSI
+├── volatility.py        realized volatility, ATR
+└── volume.py            average and relative volume
 ```
 
-Full documentation: **[docs/market_data.md](docs/market_data.md)**.
+Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
+**[docs/feature_engine.md](docs/feature_engine.md)** (Phase 2),
+**[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
+and corporate actions).
 
 ### The core idea
 
@@ -101,6 +117,9 @@ storage tests use temporary directories.
 
 ## Not implemented (by design, for later phases)
 
-Technical indicators, trading strategies, buy/sell recommendations, ML/AI
-prediction, LLM or news analysis, portfolio optimization, dashboard UI, and
-any form of broker order execution — including live-money trading.
+Trading strategies, buy/sell recommendations, ML/AI prediction, LLM or news
+analysis, portfolio optimization, position sizing, dashboard UI, and any form
+of broker order execution — including live-money trading.
+
+The Phase 2 feature engine computes indicators as *research inputs*. It
+produces no signals and makes no predictions.

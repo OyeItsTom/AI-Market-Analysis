@@ -14,6 +14,7 @@ from src.data.models import Interval
 from src.data.normalization import NormalizationError
 from src.data.provider import ProviderUnavailableError
 from src.data.providers.yahoo import YahooFinanceProvider
+from src.data.series import PriceBasis
 from tests.conftest import UTC
 
 EASTERN = timezone(timedelta(hours=-5))
@@ -185,6 +186,88 @@ class TestUnsettledBars:
         assert [bar.timestamp.day for bar in bars] == [2, 3]
 
 
+class TestAdjustmentDataCapture:
+    """Corporate actions and adjustment factors come from the SAME response."""
+
+    def _full_frame(self):
+        index = pd.DatetimeIndex([datetime(2024, 1, day, tzinfo=UTC) for day in (2, 3, 4)])
+        return pd.DataFrame(
+            {
+                "Open": [400.0, 404.0, 101.0],
+                "High": [410.0, 412.0, 103.0],
+                "Low": [396.0, 400.0, 100.0],
+                "Close": [400.0, 408.0, 102.0],
+                "Adj Close": [100.0, 102.0, 102.0],
+                "Volume": [1_000.0, 1_100.0, 4_400.0],
+                "Dividends": [0.0, 0.5, 0.0],
+                "Stock Splits": [0.0, 0.0, 4.0],
+            },
+            index=index,
+        )
+
+    def test_only_one_request_is_made(self):
+        provider, calls = provider_returning(self._full_frame())
+        provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert len(calls) == 1
+
+    def test_factors_are_adjusted_close_over_close(self):
+        provider, _ = provider_returning(self._full_frame())
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert data.factors[datetime(2024, 1, 2, tzinfo=UTC)] == pytest.approx(0.25)
+        assert data.factors[datetime(2024, 1, 4, tzinfo=UTC)] == pytest.approx(1.0)
+
+    def test_the_basis_names_both_splits_and_dividends(self):
+        provider, _ = provider_returning(self._full_frame())
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert data.produces_basis is PriceBasis.SPLIT_AND_DIVIDEND_ADJUSTED
+
+    def test_splits_and_dividends_are_captured_as_records(self):
+        provider, _ = provider_returning(self._full_frame())
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        kinds = {(a.action_type.value, a.value) for a in data.actions}
+        assert ("split", 4.0) in kinds
+        assert ("cash_dividend", 0.5) in kinds
+
+    def test_zero_action_values_are_not_recorded_as_events(self):
+        provider, _ = provider_returning(self._full_frame())
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert len(data.actions) == 2  # not one per row
+
+    def test_a_missing_adj_close_column_yields_no_factors_rather_than_guesses(self):
+        frame_without = self._full_frame().drop(columns=["Adj Close"])
+        provider, _ = provider_returning(frame_without)
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert data.factors == {}
+
+    def test_a_nan_adj_close_is_skipped_not_defaulted_to_one(self):
+        frame = self._full_frame()
+        frame.loc[frame.index[1], "Adj Close"] = float("nan")
+        provider, _ = provider_returning(frame)
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert datetime(2024, 1, 3, tzinfo=UTC) not in data.factors
+        assert len(data.factors) == 2
+
+    def test_a_zero_close_does_not_produce_an_infinite_factor(self):
+        frame = self._full_frame()
+        frame.loc[frame.index[0], "Close"] = 0.0
+        provider, _ = provider_returning(frame)
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert datetime(2024, 1, 2, tzinfo=UTC) not in data.factors
+
+    def test_an_empty_response_yields_empty_adjustment_data(self):
+        provider, _ = provider_returning(pd.DataFrame())
+        data = provider.get_adjustment_data("AAPL", START, END, "1d")
+        assert data.factors == {} and data.actions == ()
+
+    def test_the_raw_bar_path_is_unaffected_by_the_extra_columns(self):
+        # MarketBar keeps its Phase 1 meaning: raw OHLC, no action fields.
+        provider, _ = provider_returning(self._full_frame())
+        bars = provider.get_bars("AAPL", START, END, "1d")
+        assert [bar.close for bar in bars] == [400.0, 408.0, 102.0]  # RAW, not adjusted
+        assert not hasattr(bars[0], "dividends")
+        assert not hasattr(bars[0], "basis")
+
+
 class TestPriceAdjustment:
     def test_the_adapter_requests_raw_unadjusted_prices(self):
         # V4: the documented methodology must match the code. If this changes,
@@ -194,7 +277,8 @@ class TestPriceAdjustment:
         from src.data.providers import yahoo
 
         source = inspect.getsource(yahoo._default_download)
-        assert "auto_adjust=False" in source
+        assert "auto_adjust=False" in source          # raw OHLC preserved
+        assert "actions=True" in source               # actions captured, not discarded
         assert "unadjusted" in (yahoo.YahooFinanceProvider.__doc__ or "").lower()
 
     def test_adj_close_is_not_consumed(self):

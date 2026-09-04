@@ -47,6 +47,7 @@ class IssueCode(str, Enum):
     UNORDERED_TIMESTAMP = "unordered_timestamp"
     SYMBOL_MISMATCH = "symbol_mismatch"
     INTERVAL_MISMATCH = "interval_mismatch"
+    SOURCE_MISMATCH = "source_mismatch"
     WRONG_TYPE = "wrong_type"
 
 
@@ -160,6 +161,7 @@ def check_bars(
     *,
     expected_symbol: str | None = None,
     expected_interval: Interval | str | None = None,
+    expected_source: str | None = None,
     require_sorted: bool = True,
 ) -> list[ValidationIssue]:
     """Validate a series of bars, per bar and as a sequence.
@@ -168,6 +170,7 @@ def check_bars(
 
     * every bar shares the same symbol (and matches ``expected_symbol``)
     * every bar shares the same interval (and matches ``expected_interval``)
+    * every bar shares the same source (and matches ``expected_source``)
     * timestamps are unique
     * timestamps are strictly increasing when ``require_sorted`` is set
 
@@ -183,9 +186,12 @@ def check_bars(
         expected_symbol = expected_symbol.strip().upper()
     if expected_interval is not None:
         expected_interval = Interval.parse(expected_interval)
+    if expected_source is not None:
+        expected_source = expected_source.strip()
 
     reference_symbol = expected_symbol
     reference_interval = expected_interval
+    reference_source = expected_source
     seen_timestamps: dict[object, int] = {}
     previous_timestamp = None
 
@@ -214,6 +220,20 @@ def check_bars(
                 ValidationIssue(
                     IssueCode.INTERVAL_MISMATCH,
                     f"expected interval {reference_interval.value!r}, got {bar.interval.value!r}",
+                    index=index,
+                )
+            )
+
+        # Provenance: bars from two providers are not interchangeable evidence,
+        # so a series must not silently mix them. Enforced here (not only in
+        # storage) because feature calculations consume series, not files.
+        if reference_source is None:
+            reference_source = bar.source
+        elif bar.source != reference_source:
+            issues.append(
+                ValidationIssue(
+                    IssueCode.SOURCE_MISMATCH,
+                    f"expected source {reference_source!r}, got {bar.source!r}",
                     index=index,
                 )
             )
@@ -262,6 +282,7 @@ def validate_bars(
     *,
     expected_symbol: str | None = None,
     expected_interval: Interval | str | None = None,
+    expected_source: str | None = None,
     require_sorted: bool = True,
 ) -> list[MarketBar]:
     """Return the bars as a list, or raise :class:`ValidationError`."""
@@ -270,6 +291,7 @@ def validate_bars(
         bars,
         expected_symbol=expected_symbol,
         expected_interval=expected_interval,
+        expected_source=expected_source,
         require_sorted=require_sorted,
     )
     if issues:

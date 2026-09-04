@@ -219,8 +219,24 @@ turn an infrastructure failure into an empty result indistinguishable from
 `CsvBarStore` writes validated series to:
 
 ```
-data/raw/<source>/<SYMBOL>/<interval>.csv
+data/raw/<source>/<SYMBOL>/<interval>.csv                        # RAW
+data/raw/<source>/<SYMBOL>/<interval>.<price_basis>.csv          # derived
 ```
+
+Storage identity is `(symbol, interval, source, price_basis)`. A raw and an
+adjusted series for the same instrument are different keys, land in different
+files, and cannot overwrite one another. `price_basis` defaults to `RAW`, so
+Phase 1 three-argument keys and Phase 1 filenames are unchanged.
+
+Each row also carries a `price_basis` column, making a stored file
+self-describing. That column — not the filename — is authoritative: `read()`
+refuses if the file's declared basis differs from the requested key, so
+renaming a file cannot launder what its numbers mean. A file with no
+`price_basis` column predates the concept and is RAW by definition.
+
+`write_series()` / `read_series()` accept and return a `BarSeries`, carrying
+basis automatically; they are the sanctioned path for derived data. See
+`docs/adr/0001-price-basis-and-corporate-actions.md`.
 
 - Plain CSV, standard library only. **No database in Phase 1** — there is no
   query pattern yet that a directory of CSV files cannot serve, and a schema
@@ -347,7 +363,7 @@ Recorded deliberately, not solved in Phase 1:
 
 | Item | Note |
 | --- | --- |
-| **Price adjustment policy** | Raw prices only; corporate actions unmodelled. Must be settled before serious backtesting. |
+| **Transformation reproducibility** | Adjusted values persist exactly; the factors behind them do not, so a derivation cannot be re-executed from storage alone. |
 | Vendor integration coverage | `_default_download` — the only code that touches yfinance — has no test. |
 | Gap detection | Missing trading days are not flagged (needs an exchange calendar). |
 | `pytest.ini` warning filter | `error::DeprecationWarning:src.*` cannot match; the file is near-inert. |
