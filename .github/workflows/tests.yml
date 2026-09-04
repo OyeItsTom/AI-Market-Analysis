@@ -1,0 +1,65 @@
+name: tests
+
+# Independent verification of the test suite. Until this workflow has actually
+# run on GitHub, local results are not evidence that CI passes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # 3.11 only. The project is developed and verified on 3.11 and nothing
+      # here has been tested on another version; claiming a support matrix we
+      # have not run would be a guess, not a guarantee.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Report versions
+        run: |
+          python -V
+          pip --version
+          python -m pytest --version
+
+      # Catches syntax errors and broken imports even if a test file that would
+      # exercise the module is missing.
+      - name: Compile sources
+        run: python -m compileall -q src
+
+      - name: Verify imports
+        run: |
+          python - <<'PY'
+          import importlib, pkgutil
+          import src
+          failed = []
+          for module in pkgutil.walk_packages(src.__path__, prefix="src."):
+              try:
+                  importlib.import_module(module.name)
+              except Exception as exc:  # noqa: BLE001 - report all, fail once
+                  failed.append(f"{module.name}: {exc!r}")
+          if failed:
+              raise SystemExit("import failures:\n" + "\n".join(failed))
+          print("all src modules import cleanly")
+          PY
+
+      - name: Run tests
+        run: python -m pytest -q
