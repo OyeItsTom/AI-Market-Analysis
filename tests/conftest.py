@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.data.models import Interval, MarketBar
+from src.data.series import BarSeries, PriceBasis
 
 UTC = timezone.utc
 
@@ -69,3 +70,57 @@ def bars() -> list[MarketBar]:
         make_bar(timestamp=start + timedelta(days=offset), close=105.0 + offset)
         for offset in range(3)
     ]
+
+
+# --------------------------------------------------------------------------
+# Phase 2 helpers
+# --------------------------------------------------------------------------
+
+
+def make_series(
+    closes,
+    *,
+    symbol: str = "TEST",
+    interval: Interval | str = Interval.DAY_1,
+    source: str = "test",
+    basis: PriceBasis | str = PriceBasis.RAW,
+    highs=None,
+    lows=None,
+    opens=None,
+    volumes=None,
+    start: datetime | None = None,
+) -> BarSeries:
+    """Build a valid BarSeries from a list of closes.
+
+    High/low default to the close (a zero-range bar), which keeps hand-computed
+    fixtures arithmetically obvious. Pass highs/lows explicitly for ATR.
+    """
+    start = start or datetime(2024, 1, 1, tzinfo=UTC)
+    step = Interval.parse(interval).max_duration
+    bars = []
+    for index, close in enumerate(closes):
+        open_ = opens[index] if opens else close
+        high = highs[index] if highs else max(open_, close)
+        low = lows[index] if lows else min(open_, close)
+        bars.append(
+            MarketBar(
+                symbol=symbol,
+                timestamp=start + step * index,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volumes[index] if volumes else 1_000.0,
+                interval=interval,
+                source=source,
+            )
+        )
+    return BarSeries.from_bars(
+        bars, basis=basis, symbol=symbol, interval=interval, source=source
+    )
+
+
+@pytest.fixture
+def series():
+    """A short, valid raw daily series."""
+    return make_series([10.0, 11.0, 12.0, 11.5, 13.0, 12.5, 14.0, 13.5])

@@ -14,12 +14,16 @@ test in this repository runs offline.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone, tzinfo
 from typing import Any, Callable, Sequence
 
+from ..adjustment import AdjustmentData
+from ..corporate_actions import ActionType, CorporateAction
 from ..models import Interval, MarketBar
-from ..normalization import bars_from_records
+from ..normalization import bars_from_records, coerce_timestamp, is_missing
 from ..provider import MarketDataProvider, ProviderConfigurationError, ProviderUnavailableError
+from ..series import PriceBasis
 
 #: Our interval vocabulary -> yfinance's.  Only intervals we have verified
 #: are listed; anything else is rejected rather than passed through blindly.
@@ -47,12 +51,18 @@ def _default_download(symbol: str, start: datetime, end: datetime, yf_interval: 
         ) from exc
 
     try:
+        # auto_adjust=False keeps Open/High/Low/Close as RAW traded prices --
+        # the Phase 1 contract -- while additionally returning "Adj Close".
+        # actions=True adds "Dividends" and "Stock Splits" to the SAME response,
+        # so corporate-action capture costs no extra request. The extra columns
+        # are consumed only by get_adjustment_data(); the raw bar path ignores
+        # them, so MarketBar keeps exactly its Phase 1 meaning.
         return yfinance.Ticker(symbol).history(
             start=start,
             end=end,
             interval=yf_interval,
             auto_adjust=False,
-            actions=False,
+            actions=True,
         )
     except Exception as exc:  # pragma: no cover - network failure path
         raise ProviderUnavailableError(f"yfinance request for {symbol!r} failed: {exc}") from exc
@@ -151,6 +161,21 @@ class YahooFinanceProvider(MarketDataProvider):
     # -- yfinance-specific unpacking ------------------------------------
 
     @staticmethod
+    def _flatten_columns(frame: Any, symbol: str) -> Any:
+        """Collapse ticker-keyed MultiIndex columns to a single level."""
+        columns = frame.columns
+        if getattr(columns, "nlevels", 1) <= 1:
+            return frame
+        levels_with_symbol = [
+            level
+            for level in range(columns.nlevels)
+            if symbol in set(columns.get_level_values(level))
+        ]
+        if levels_with_symbol:
+            return frame.xs(symbol, axis=1, level=levels_with_symbol[0])
+        return frame.droplevel(list(range(1, columns.nlevels)), axis=1)
+
+    @staticmethod
     def _frame_to_records(frame: Any, symbol: str) -> list[dict[str, Any]]:
         """Turn a yfinance DataFrame into plain records.
 
@@ -167,19 +192,7 @@ class YahooFinanceProvider(MarketDataProvider):
                 f"yfinance returned an unexpected object for {symbol!r}: {type(frame).__name__}"
             )
 
-        columns = frame.columns
-        if getattr(columns, "nlevels", 1) > 1:
-            # Drop the ticker level; a single-symbol request should leave one
-            # level of OHLCV names behind.
-            levels_with_symbol = [
-                level
-                for level in range(columns.nlevels)
-                if symbol in set(columns.get_level_values(level))
-            ]
-            if levels_with_symbol:
-                frame = frame.xs(symbol, axis=1, level=levels_with_symbol[0])
-            else:
-                frame = frame.droplevel(list(range(1, columns.nlevels)), axis=1)
+        frame = YahooFinanceProvider._flatten_columns(frame, symbol)
 
         wanted = {"open", "high", "low", "close", "volume"}
         selected: dict[str, Any] = {}
@@ -210,6 +223,124 @@ class YahooFinanceProvider(MarketDataProvider):
                 record[field] = row[column]
             records.append(record)
         return records
+
+
+    # -- corporate actions / adjustment ----------------------------------
+
+    def get_adjustment_data(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        interval: Interval | str = Interval.DAY_1,
+    ) -> AdjustmentData:
+        """Return the adjustment factors and corporate actions for a window.
+
+        Uses the *same* response shape as :meth:`get_bars` -- Yahoo returns
+        ``Adj Close``, ``Dividends`` and ``Stock Splits`` alongside the raw
+        OHLCV -- so no additional request is made.
+
+        The per-bar factor is ``Adj Close / Close``. That ratio was verified
+        against the installed yfinance implementation to move across dividend
+        dates as well as splits, so it produces a
+        ``SPLIT_AND_DIVIDEND_ADJUSTED`` basis, not a split-only one. See
+        ``docs/adr/0001-price-basis-and-corporate-actions.md``.
+
+        Bars whose ``Adj Close`` is missing are skipped here rather than
+        defaulted; :func:`~src.data.adjustment.adjust` will then refuse the
+        series outright rather than adjust it partially.
+        """
+        symbol = self._normalize_symbol(symbol)
+        interval = Interval.parse(interval)
+        self._check_window(start, end)
+
+        frame = self._download(symbol, start, end, _YF_INTERVALS[interval])
+        rows = self._extra_columns(frame, symbol)
+
+        start_utc = start.astimezone(timezone.utc)
+        end_utc = end.astimezone(timezone.utc)
+
+        factors: dict[datetime, float] = {}
+        actions: list[CorporateAction] = []
+        for row in rows:
+            timestamp = coerce_timestamp(row["timestamp"], assume_timezone=self._assume_timezone)
+            if not (start_utc <= timestamp <= end_utc):
+                continue
+
+            close, adj_close = row.get("close"), row.get("adj close")
+            if not is_missing(close) and not is_missing(adj_close) and float(close) != 0:
+                candidate = float(adj_close) / float(close)
+                if math.isfinite(candidate) and candidate > 0:
+                    factors[timestamp] = candidate
+
+            split = row.get("stock splits")
+            if not is_missing(split) and float(split) > 0:
+                actions.append(
+                    CorporateAction(
+                        symbol=symbol,
+                        effective_time=timestamp,
+                        action_type=ActionType.SPLIT,
+                        value=float(split),
+                        source=self.name,
+                    )
+                )
+
+            dividend = row.get("dividends")
+            if not is_missing(dividend) and float(dividend) > 0:
+                actions.append(
+                    CorporateAction(
+                        symbol=symbol,
+                        effective_time=timestamp,
+                        action_type=ActionType.CASH_DIVIDEND,
+                        value=float(dividend),
+                        source=self.name,
+                    )
+                )
+
+        return AdjustmentData(
+            symbol=symbol,
+            source=self.name,
+            interval=interval,
+            produces_basis=PriceBasis.SPLIT_AND_DIVIDEND_ADJUSTED,
+            factors=factors,
+            actions=tuple(actions),
+        )
+
+    @staticmethod
+    def _extra_columns(frame: Any, symbol: str) -> list[dict[str, Any]]:
+        """Pull the adjustment-related columns out of a yfinance frame.
+
+        Tolerant by design: a response without ``Adj Close`` or without the
+        action columns yields fewer factors/actions rather than an exception,
+        because the caller (``adjust``) is the layer that decides whether the
+        resulting coverage is good enough.
+        """
+        if frame is None or getattr(frame, "empty", False):
+            return []
+        if not hasattr(frame, "columns") or not hasattr(frame, "index"):
+            raise ProviderUnavailableError(
+                f"yfinance returned an unexpected object for {symbol!r}: {type(frame).__name__}"
+            )
+
+        frame = YahooFinanceProvider._flatten_columns(frame, symbol)
+        wanted = {"close", "adj close", "dividends", "stock splits"}
+        selected: dict[str, Any] = {}
+        for column in frame.columns:
+            field = str(column).strip().lower()
+            if field in wanted:
+                if field in selected:
+                    raise ProviderUnavailableError(
+                        f"yfinance response for {symbol!r} has more than one {field!r} column"
+                    )
+                selected[field] = column
+
+        rows: list[dict[str, Any]] = []
+        for timestamp, row in frame.iterrows():
+            record: dict[str, Any] = {"timestamp": timestamp}
+            for field, column in selected.items():
+                record[field] = row[column]
+            rows.append(record)
+        return rows
 
 
 __all__ = ["YahooFinanceProvider"]
