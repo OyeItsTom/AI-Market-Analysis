@@ -124,3 +124,29 @@ def make_series(
 def series():
     """A short, valid raw daily series."""
     return make_series([10.0, 11.0, 12.0, 11.5, 13.0, 12.5, 14.0, 13.5])
+
+
+def make_observations(series, states, *, hypothesis_id="test_hypothesis",
+                      version=1, fingerprint="0123456789abcdef"):
+    """Build one ResearchObservation per bar with the given states.
+
+    Phase 4 fixtures need observations without running a hypothesis, so the
+    outcome contract can be tested against deliberately chosen classifications.
+    """
+    from src.strategies.research import ReasonCode, ResearchObservation
+
+    return tuple(
+        ResearchObservation(
+            hypothesis_id=hypothesis_id,
+            version=version,
+            fingerprint=fingerprint,
+            symbol=series.symbol,
+            interval=series.interval,
+            basis=series.basis,
+            timestamp=bar.timestamp,
+            state=state,
+            evidence={},
+            reason_codes=(ReasonCode.FAST_ABOVE_SLOW,),
+        )
+        for bar, state in zip(series.bars, states)
+    )

@@ -54,6 +54,11 @@ src/strategies/          research hypothesis framework (no trading logic)
 ├── base.py              ResearchHypothesis contract (causal by construction)
 └── hypotheses.py        three example hypotheses (2 point-in-time, 1 history)
 
+src/evaluation/          outcome evaluation (no trading simulation)
+├── outcome.py           OutcomeSpec + immutable EvaluatedOutcome
+├── evaluate.py          causal evaluation against subsequent bars
+└── metrics.py           EvaluationSummary + benchmark
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -66,8 +71,10 @@ src/features/            pure feature functions over BarSeries
 Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/feature_engine.md](docs/feature_engine.md)** (Phase 2),
 **[docs/research_framework.md](docs/research_framework.md)** (Phase 3),
+**[docs/research_evaluation.md](docs/research_evaluation.md)** (Phase 4),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
-and corporate actions).
+and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
+(outcome evaluation conventions).
 
 ### The core idea
 
@@ -134,7 +141,8 @@ pull requests.
 
 ## Not implemented (by design, for later phases)
 
-Backtesting, P&L, buy/sell recommendations, ML/AI prediction, LLM or news
+Economic simulation (positions, trades, costs, slippage, equity curves,
+drawdown, Sharpe), buy/sell recommendations, ML/AI prediction, LLM or news
 analysis, portfolio optimization, position sizing, dashboard UI, and any form
 of broker order execution — including live-money trading.
 
