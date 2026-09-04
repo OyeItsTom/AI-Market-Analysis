@@ -11,9 +11,14 @@ An educational, evidence-driven quantitative market-research and
 
 **Phase 1 — Market Data Foundation: implemented.**
 **Phase 2 — Research data semantics + feature engine: implemented.**
+**Phase 3 — Research hypothesis framework + CI: implemented.**
 
-Later phases (strategies, backtesting, evaluation, risk, signals, paper
-trading, dashboard) are not implemented yet.
+Later phases (backtesting, evaluation, risk, signals, paper trading,
+dashboard) are not implemented yet.
+
+Phase 3 expresses research *hypotheses* that classify evidence. It contains no
+trading logic and measures nothing about outcomes — a classification is not a
+recommendation, and no profitability is claimed or measured.
 
 ## Target architecture
 
@@ -42,6 +47,13 @@ src/data/
     ├── yahoo.py         yfinance adapter (development / fallback source)
     └── alpaca.py        architectural stub
 
+src/strategies/          research hypothesis framework (no trading logic)
+├── spec.py              FeatureSpec / HypothesisSpec + deterministic fingerprint
+├── research.py          ResearchState, ReasonCode, ResearchObservation
+├── evidence.py          EvidenceSet + causal EvidenceWindow
+├── base.py              ResearchHypothesis contract (causal by construction)
+└── hypotheses.py        three example hypotheses (2 point-in-time, 1 history)
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -53,6 +65,7 @@ src/features/            pure feature functions over BarSeries
 
 Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/feature_engine.md](docs/feature_engine.md)** (Phase 2),
+**[docs/research_framework.md](docs/research_framework.md)** (Phase 3),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions).
 
@@ -115,11 +128,16 @@ pytest -q
 The suite runs entirely offline: provider tests inject fake responses and
 storage tests use temporary directories.
 
+**Supported Python version: 3.11.** CI (`.github/workflows/tests.yml`) runs
+`compileall`, an import check and the full suite on pushes to `main` and on
+pull requests.
+
 ## Not implemented (by design, for later phases)
 
-Trading strategies, buy/sell recommendations, ML/AI prediction, LLM or news
+Backtesting, P&L, buy/sell recommendations, ML/AI prediction, LLM or news
 analysis, portfolio optimization, position sizing, dashboard UI, and any form
 of broker order execution — including live-money trading.
 
-The Phase 2 feature engine computes indicators as *research inputs*. It
-produces no signals and makes no predictions.
+The Phase 2 feature engine computes indicators as *research inputs*. The
+Phase 3 framework classifies that evidence into research states. Neither
+produces trading signals, predictions, or any claim about profitability.

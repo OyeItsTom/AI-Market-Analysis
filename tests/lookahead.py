@@ -39,19 +39,28 @@ def perturb_tail(series: BarSeries, k: int, *, scale: float = 7.5) -> BarSeries:
     that the perturbed series is itself a legal ``BarSeries`` and the feature
     cannot reject it for unrelated reasons.
 
-    The tail alternates between values far ABOVE and far BELOW the original
-    range. Scaling the tail in one direction only would hide a whole class of
-    leak: a feature using ``min(all_prices)`` survives an upward-only
-    perturbation because the minimum stays in the prefix. Moving the tail in
-    both directions changes every global statistic.
+    The tail is replaced with two CONTIGUOUS blocks: the first far ABOVE the
+    original range, the second far BELOW it.
+
+    Both properties matter, and both were established by finding a cheat that
+    survived without them:
+
+    * **Both directions.** An upward-only perturbation leaves ``min(prices)``
+      in the prefix, so a feature leaking through the global minimum survives.
+    * **Contiguous blocks, not per-bar alternation.** Alternating up/down on
+      every bar cancels under any moving average, so a *smoothed* global
+      statistic stays put even though the raw prices moved wildly. A
+      hypothesis leaking through ``min(sma_values)`` survived exactly that way.
     """
     if not 0 <= k <= len(series):
         raise ValueError(f"k must be within 0..{len(series)}, got {k}")
 
     bars = list(series.bars[:k])
-    for offset, bar in enumerate(series.bars[k:]):
-        # Alternate far above / far below the original range.
-        close = bar.close * scale if offset % 2 == 0 else bar.close / scale
+    tail = series.bars[k:]
+    # Contiguous blocks so that windowed/smoothed statistics move too.
+    boundary = max(1, len(tail) // 2)
+    for offset, bar in enumerate(tail):
+        close = bar.close * scale if offset < boundary else bar.close / scale
         open_ = close * 0.9
         bars.append(
             MarketBar(
