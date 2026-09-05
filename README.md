@@ -15,8 +15,9 @@ An educational, evidence-driven quantitative market-research and
 **Phase 4 — Causal outcome evaluation: implemented.**
 **Phase 5 — Paper position + risk engine: implemented.**
 **Phase 6 — Research assessment: implemented.**
+**Phase 7 — Local research dashboard: implemented.**
 
-Paper-trade execution and the dashboard are not implemented.
+Paper-trade execution is not implemented. Phase 8 has not been started.
 
 Phase 3 expresses research *hypotheses* that classify evidence. It contains no
 trading logic and measures nothing about outcomes — a classification is not a
@@ -27,6 +28,20 @@ deterministic exposure limits on them. It is long-only, has no prices, no cash,
 no P&L and no execution of any kind: a "position" there is a notional amount a
 human chose to write down, not a trade. A research classification cannot
 create one — the two are separated by construction, not by convention.
+
+Phase 7 adds a **localhost-only** Streamlit interface for reading the existing
+pipeline, plus a manual paper panel. It introduces no research rule and no new
+capability: every state and count on screen was produced by a Phase 1-6 module.
+The research panel has no action control and the paper panel is never shown an
+assessment, so nothing in the interface turns a classification into a position.
+Paper state is session-only and is never written to disk.
+
+```
+streamlit run src/dashboard/app.py --server.address=127.0.0.1
+```
+
+It binds to the loopback interface only. See
+**[docs/dashboard.md](docs/dashboard.md)**.
 
 ## Target architecture
 
@@ -93,12 +108,14 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/research_evaluation.md](docs/research_evaluation.md)** (Phase 4),
 **[docs/paper_risk_engine.md](docs/paper_risk_engine.md)** (Phase 5),
 **[docs/research_assessment.md](docs/research_assessment.md)** (Phase 6),
+**[docs/dashboard.md](docs/dashboard.md)** (Phase 7),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
 **[ADR 0003](docs/adr/0003-paper-position-risk-engine.md)** (paper position and
 risk engine), **[ADR 0004](docs/adr/0004-research-assessment.md)** (research
-assessment).
+assessment), **[ADR 0005](docs/adr/0005-local-dashboard.md)** (local
+dashboard).
 
 ### The core idea
 
@@ -167,8 +184,12 @@ pull requests.
 
 Economic simulation (trades, fills, costs, slippage, cash balances, equity
 curves, drawdown, Sharpe), buy/sell recommendations, ML/AI prediction, LLM or
-news analysis, portfolio optimization, automated position sizing, dashboard UI,
-and any form of broker order execution — including live-money trading.
+news analysis, portfolio optimization, automated position sizing, and any form
+of broker order execution — including live-money trading.
+
+Phase 7's dashboard displays this pipeline; it does not extend it. It has no
+scheduler, no background refresh, no persistence, no authentication and no
+network exposure beyond the loopback interface.
 
 Phase 5 introduces `PaperPosition`, so "positions" above means *simulated
 economic positions*: Phase 5 tracks nominal exposure only. It has no prices, so
