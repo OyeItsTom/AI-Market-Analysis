@@ -14,8 +14,9 @@ An educational, evidence-driven quantitative market-research and
 **Phase 3 — Research hypothesis framework + CI: implemented.**
 **Phase 4 — Causal outcome evaluation: implemented.**
 **Phase 5 — Paper position + risk engine: implemented.**
+**Phase 6 — Research assessment: implemented.**
 
-Signals, paper-trade execution and the dashboard are not implemented.
+Paper-trade execution and the dashboard are not implemented.
 
 Phase 3 expresses research *hypotheses* that classify evidence. It contains no
 trading logic and measures nothing about outcomes — a classification is not a
@@ -67,6 +68,11 @@ src/portfolio/           paper position + risk domain (PAPER ONLY, no execution)
 ├── position.py          immutable PaperPosition
 └── portfolio.py         immutable PaperPortfolio + apply()
 
+src/assessments/         combined research classification (no trading semantics)
+├── policy.py            AssessmentPolicy + aggregation-rule identity
+├── assessment.py        AssessmentState, counts, reason codes, ResearchAssessment
+└── aggregate.py         assess() — directional_presence_v1
+
 src/evaluation/          outcome evaluation (no trading simulation)
 ├── outcome.py           OutcomeSpec + immutable EvaluatedOutcome
 ├── evaluate.py          causal evaluation against subsequent bars
@@ -86,11 +92,13 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/research_framework.md](docs/research_framework.md)** (Phase 3),
 **[docs/research_evaluation.md](docs/research_evaluation.md)** (Phase 4),
 **[docs/paper_risk_engine.md](docs/paper_risk_engine.md)** (Phase 5),
+**[docs/research_assessment.md](docs/research_assessment.md)** (Phase 6),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
 **[ADR 0003](docs/adr/0003-paper-position-risk-engine.md)** (paper position and
-risk engine).
+risk engine), **[ADR 0004](docs/adr/0004-research-assessment.md)** (research
+assessment).
 
 ### The core idea
 
@@ -170,5 +178,6 @@ size is supplied by the human, never derived.
 The Phase 2 feature engine computes indicators as *research inputs*. The
 Phase 3 framework classifies that evidence into research states. Phase 4
 measures what happened *after* a classification without simulating any trade.
-None of them produce trading signals, predictions, or any claim about
-profitability.
+Phase 6 combines several classifications into one assessment — with counts, not
+confidence, and no path to a paper action. None of them produce trading signals,
+predictions, or any claim about profitability.

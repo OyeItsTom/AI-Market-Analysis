@@ -379,6 +379,7 @@ class TestDeterminism:
 
 class TestArchitecturalBoundary:
     FORBIDDEN = ("src.strategies", "src.evaluation", "src.backtesting", "src.signals",
+                 "src.assessments",
                  "yfinance", "requests", "urllib", "http", "socket", "sqlite3",
                  "anthropic", "openai", "random", "uuid", "secrets")
 
