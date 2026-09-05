@@ -12,13 +12,20 @@ An educational, evidence-driven quantitative market-research and
 **Phase 1 — Market Data Foundation: implemented.**
 **Phase 2 — Research data semantics + feature engine: implemented.**
 **Phase 3 — Research hypothesis framework + CI: implemented.**
+**Phase 4 — Causal outcome evaluation: implemented.**
+**Phase 5 — Paper position + risk engine: implemented.**
 
-Later phases (backtesting, evaluation, risk, signals, paper trading,
-dashboard) are not implemented yet.
+Signals, paper-trade execution and the dashboard are not implemented.
 
 Phase 3 expresses research *hypotheses* that classify evidence. It contains no
 trading logic and measures nothing about outcomes — a classification is not a
 recommendation, and no profitability is claimed or measured.
+
+Phase 5 records **manually entered** hypothetical positions and enforces
+deterministic exposure limits on them. It is long-only, has no prices, no cash,
+no P&L and no execution of any kind: a "position" there is a notional amount a
+human chose to write down, not a trade. A research classification cannot
+create one — the two are separated by construction, not by convention.
 
 ## Target architecture
 
@@ -54,6 +61,12 @@ src/strategies/          research hypothesis framework (no trading logic)
 ├── base.py              ResearchHypothesis contract (causal by construction)
 └── hypotheses.py        three example hypotheses (2 point-in-time, 1 history)
 
+src/portfolio/           paper position + risk domain (PAPER ONLY, no execution)
+├── intent.py            PaperIntent (OpenLong/Close) + optional provenance
+├── policy.py            RiskPolicy (+ fingerprint), RiskDecision
+├── position.py          immutable PaperPosition
+└── portfolio.py         immutable PaperPortfolio + apply()
+
 src/evaluation/          outcome evaluation (no trading simulation)
 ├── outcome.py           OutcomeSpec + immutable EvaluatedOutcome
 ├── evaluate.py          causal evaluation against subsequent bars
@@ -72,9 +85,12 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/feature_engine.md](docs/feature_engine.md)** (Phase 2),
 **[docs/research_framework.md](docs/research_framework.md)** (Phase 3),
 **[docs/research_evaluation.md](docs/research_evaluation.md)** (Phase 4),
+**[docs/paper_risk_engine.md](docs/paper_risk_engine.md)** (Phase 5),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
-(outcome evaluation conventions).
+(outcome evaluation conventions),
+**[ADR 0003](docs/adr/0003-paper-position-risk-engine.md)** (paper position and
+risk engine).
 
 ### The core idea
 
@@ -141,11 +157,18 @@ pull requests.
 
 ## Not implemented (by design, for later phases)
 
-Economic simulation (positions, trades, costs, slippage, equity curves,
-drawdown, Sharpe), buy/sell recommendations, ML/AI prediction, LLM or news
-analysis, portfolio optimization, position sizing, dashboard UI, and any form
-of broker order execution — including live-money trading.
+Economic simulation (trades, fills, costs, slippage, cash balances, equity
+curves, drawdown, Sharpe), buy/sell recommendations, ML/AI prediction, LLM or
+news analysis, portfolio optimization, automated position sizing, dashboard UI,
+and any form of broker order execution — including live-money trading.
+
+Phase 5 introduces `PaperPosition`, so "positions" above means *simulated
+economic positions*: Phase 5 tracks nominal exposure only. It has no prices, so
+nothing is marked to market and no profit or loss exists to compute. Position
+size is supplied by the human, never derived.
 
 The Phase 2 feature engine computes indicators as *research inputs*. The
-Phase 3 framework classifies that evidence into research states. Neither
-produces trading signals, predictions, or any claim about profitability.
+Phase 3 framework classifies that evidence into research states. Phase 4
+measures what happened *after* a classification without simulating any trade.
+None of them produce trading signals, predictions, or any claim about
+profitability.
