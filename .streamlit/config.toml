@@ -1,0 +1,15 @@
+# Phase 7 runs on this machine only.
+#
+# `server.address` has no default (Streamlit reports None), so loopback is set
+# explicitly rather than assumed. The documented run command passes
+# --server.address=127.0.0.1 as well; either alone is sufficient, and both
+# together mean forgetting the flag still cannot expose the dashboard to the
+# local network.
+#
+# Never set this to 0.0.0.0.
+[server]
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false
