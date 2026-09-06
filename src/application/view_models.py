@@ -503,6 +503,173 @@ def decision_view(decision: RiskDecision) -> DecisionView:
     )
 
 
+# -- news ---------------------------------------------------------------
+
+
+#: Wording for each association kind. The Yahoo phrasing is the whole point of
+#: the enum: the payload names no ticker, so "returned for AAPL" is the
+#: strongest true statement and "about AAPL" would be a claim nobody made.
+_ASSOCIATION_TEXT: dict[str, str] = {
+    "verified_source": "Filed by this company (identified by the SEC)",
+    "queried_symbol": "Returned for {symbol} — the source named no ticker",
+    "inferred": "Inferred association",
+}
+
+#: Labels for the timing facts. "Accepted by the SEC" is not "published to the
+#: world", and the label says so rather than letting a reader assume.
+LABEL_SOURCE_EVENT = "Accepted by the SEC"
+LABEL_SOURCE_PUBLISHED = "Publisher's stated time"
+LABEL_RETRIEVED = "Fetched by this dashboard"
+
+TOOLTIP_SOURCE_EVENT = (
+    "When EDGAR accepted the filing. It is the earliest instant it could have "
+    "been available, not a record of when it reached the public."
+)
+TOOLTIP_RETRIEVED = (
+    "When this dashboard fetched the record. It says nothing about when the "
+    "source published it."
+)
+
+NEWS_DISCLAIMER = (
+    "External information only — headlines and filing metadata as published by "
+    "their sources. Nothing here is analysed, scored or turned into a view."
+)
+
+
+@dataclass(frozen=True)
+class NewsRow:
+    """One external record, formatted. Carries no judgement of any kind."""
+
+    headline: str
+    publisher: str
+    source: str
+    source_class: str
+    is_official: bool
+    association: str
+    url: str
+    source_time_label: str
+    source_time: str
+    retrieved_at: str
+    availability_basis: str
+    form: str = ""
+    items: str = ""
+    summary: str = ""
+
+
+def news_rows(snapshot, *, recent: int = 50) -> tuple[NewsRow, ...]:
+    """Format a NewsSnapshot's documents in the order the snapshot supplies.
+
+    The order is not recomputed here: chronology belongs to the application
+    layer, and re-sorting by source class in the view would be exactly the
+    distortion that layer refuses.
+    """
+    rows: list[NewsRow] = []
+    for document in snapshot.documents[:recent]:
+        association = snapshot.association_for(document)
+        wording = _ASSOCIATION_TEXT.get(
+            getattr(association, "value", ""), "Association not recorded"
+        ).format(symbol=snapshot.symbol)
+        official = document.source_class.is_official
+        rows.append(
+            NewsRow(
+                headline=document.headline,
+                publisher=document.publisher,
+                source=document.source,
+                source_class="Official filing" if official else "News report",
+                is_official=official,
+                association=wording,
+                url=document.canonical_url,
+                source_time_label=(
+                    LABEL_SOURCE_EVENT if official else LABEL_SOURCE_PUBLISHED
+                ),
+                source_time=_stamp(document.source_time),
+                retrieved_at=_stamp(document.retrieved_at),
+                availability_basis=document.availability_basis.value,
+                form=getattr(document, "form", ""),
+                items=", ".join(getattr(document, "items", ())),
+                summary=document.summary,
+            )
+        )
+    return tuple(rows)
+
+
+@dataclass(frozen=True)
+class SourceOutcomeRow:
+    """One source's result, worded so a partial refresh cannot read as success."""
+
+    source: str
+    outcome: str
+    is_healthy: bool
+    detail: str
+    counters: str
+
+
+@dataclass(frozen=True)
+class NewsView:
+    symbol: str
+    built_at: str
+    status: str
+    is_partial: bool
+    all_failed: bool
+    rows: tuple[NewsRow, ...]
+    sources: tuple[SourceOutcomeRow, ...]
+    official_count: int
+    secondary_count: int
+    integrity_warning: str | None = None
+    cik_map_note: str = ""
+    disclaimer: str = NEWS_DISCLAIMER
+
+    @property
+    def status_note(self) -> str:
+        if self.all_failed:
+            return "No source could be reached. Nothing below has been updated."
+        if self.is_partial:
+            return (
+                "Partial refresh: at least one source did not answer. What is shown "
+                "may be missing records from that source."
+            )
+        return "Every configured source answered."
+
+
+def news_view(snapshot) -> NewsView:
+    """Format a NewsSnapshot. State and ordering come from the snapshot."""
+    status = snapshot.status.value
+    sources = tuple(
+        SourceOutcomeRow(
+            source=result.source,
+            outcome=result.outcome.value.replace("_", " ").upper(),
+            is_healthy=result.is_healthy,
+            detail=result.detail,
+            counters=result.counters.describe(),
+        )
+        for result in snapshot.source_results
+    )
+    warning = (
+        f"Some stored records could not be read and were left untouched: "
+        f"{snapshot.integrity.describe()}"
+        if snapshot.has_integrity_warning
+        else None
+    )
+    return NewsView(
+        symbol=snapshot.symbol,
+        built_at=_stamp(snapshot.built_at),
+        status=status.replace("_", " ").upper(),
+        is_partial=status == "partial",
+        all_failed=status == "all_failed",
+        rows=news_rows(snapshot),
+        sources=sources,
+        official_count=len(snapshot.official),
+        secondary_count=len(snapshot.secondary),
+        integrity_warning=warning,
+        cik_map_note=(
+            f"SEC ticker map vintage: {snapshot.cik_map_last_modified}. It maps "
+            "tickers as they are today and is not evidence of a historical mapping."
+            if snapshot.cik_map_last_modified
+            else ""
+        ),
+    )
+
+
 __all__ = [
     "MarketView",
     "market_view",
@@ -522,6 +689,17 @@ __all__ = [
     "provenance_choices",
     "PROVENANCE_LABEL",
     "PROVENANCE_HELP",
+    "NewsRow",
+    "news_rows",
+    "NewsView",
+    "news_view",
+    "SourceOutcomeRow",
+    "NEWS_DISCLAIMER",
+    "LABEL_SOURCE_EVENT",
+    "LABEL_SOURCE_PUBLISHED",
+    "LABEL_RETRIEVED",
+    "TOOLTIP_SOURCE_EVENT",
+    "TOOLTIP_RETRIEVED",
     "humanise_reason",
     "RESEARCH_DISCLAIMER",
     "PAPER_SESSION_WARNING",

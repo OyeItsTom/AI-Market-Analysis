@@ -492,6 +492,12 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
                 ) and target.value.id == "state":
                     assigned.add(target.attr)
     # Whole objects only: no observations, features or assessment stored apart.
-    assert assigned <= {"snapshot", "failure", "paper", "paper_error", "provider", "clock"}
+    # The news_* keys are Phase 8 additions and are whole objects too:
+    # news_snapshot is a complete NewsSnapshot, news_service an application
+    # dependency, news_failure a complete classified failure.
+    assert assigned <= {
+        "snapshot", "failure", "paper", "paper_error", "provider", "clock",
+        "news_snapshot", "news_service", "news_failure",
+    }
     for forbidden in ("observations", "assessment", "features", "series"):
         assert forbidden not in assigned

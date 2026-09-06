@@ -16,8 +16,9 @@ An educational, evidence-driven quantitative market-research and
 **Phase 5 — Paper position + risk engine: implemented.**
 **Phase 6 — Research assessment: implemented.**
 **Phase 7 — Local research dashboard: implemented.**
+**Phase 8 — News and company announcements: implemented.**
 
-Paper-trade execution is not implemented. Phase 8 has not been started.
+Paper-trade execution is not implemented. Phase 9 has not been started.
 
 Phase 3 expresses research *hypotheses* that classify evidence. It contains no
 trading logic and measures nothing about outcomes — a classification is not a
@@ -42,6 +43,14 @@ streamlit run src/dashboard/app.py --server.address=127.0.0.1
 
 It binds to the loopback interface only. See
 **[docs/dashboard.md](docs/dashboard.md)**.
+
+Phase 8 adds an auditable **external-information layer**: official SEC filings
+and reported news, recorded with honest provenance and timing. It **records but
+does not interpret** — no sentiment, no score, no classifier. News is a separate
+snapshot that never changes a `ResearchAssessment` and never opens a paper
+position. Symbols are supported where the SEC ticker map resolves a CIK; EDGAR
+needs a contact address in `SEC_USER_AGENT` (see `.env.example`), and Yahoo news
+works without it. See **[docs/news.md](docs/news.md)**.
 
 ## Target architecture
 
@@ -109,13 +118,15 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/paper_risk_engine.md](docs/paper_risk_engine.md)** (Phase 5),
 **[docs/research_assessment.md](docs/research_assessment.md)** (Phase 6),
 **[docs/dashboard.md](docs/dashboard.md)** (Phase 7),
+**[docs/news.md](docs/news.md)** (Phase 8),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
 **[ADR 0003](docs/adr/0003-paper-position-risk-engine.md)** (paper position and
 risk engine), **[ADR 0004](docs/adr/0004-research-assessment.md)** (research
 assessment), **[ADR 0005](docs/adr/0005-local-dashboard.md)** (local
-dashboard).
+dashboard), **[ADR 0006](docs/adr/0006-news-and-announcements.md)** (news and
+announcements).
 
 ### The core idea
 
@@ -190,6 +201,10 @@ of broker order execution — including live-money trading.
 Phase 7's dashboard displays this pipeline; it does not extend it. It has no
 scheduler, no background refresh, no persistence, no authentication and no
 network exposure beyond the loopback interface.
+
+Phase 8 stores external information locally, but interprets none of it. It has
+no sentiment analysis, no LLM, no article-body storage, no scraping, no
+scheduler and no route from a headline to a research state or a paper action.
 
 Phase 5 introduces `PaperPosition`, so "positions" above means *simulated
 economic positions*: Phase 5 tracks nominal exposure only. It has no prices, so

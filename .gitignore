@@ -27,6 +27,10 @@ secrets.json
 data/raw/*
 data/processed/*
 
+# Locally ingested news, filings and the cached SEC ticker map. Downloaded
+# third-party content must never be committed.
+data/news/
+
 # Keep empty data folders in Git
 !data/raw/.gitkeep
 !data/processed/.gitkeep

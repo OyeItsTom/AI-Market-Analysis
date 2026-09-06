@@ -48,8 +48,10 @@ from src.application import (
     default_provider,
     display_names,
 )
+from src.application.news import NewsService, SymbolNotSupported, build_service
 from src.application.view_models import (
     RESEARCH_DISCLAIMER,
+    news_view,
     assessment_view,
     decision_view,
     feature_rows,
@@ -64,6 +66,7 @@ from src.dashboard.paper_view import (
     render_open_form,
     render_portfolio,
 )
+from src.dashboard.news_view import render_news
 from src.dashboard.research_view import (
     render_assessment,
     render_features,
@@ -99,6 +102,14 @@ def init_session() -> None:
         state.provider = default_provider()
     if "clock" not in state:
         state.clock = None
+    if "news_service" not in state:
+        # Injectable, like the provider: a test seeds a service whose sources
+        # are fakes, so the news panel is exercised without a network.
+        state.news_service = None
+    if "news_snapshot" not in state:
+        state.news_snapshot = None
+    if "news_failure" not in state:
+        state.news_failure = None
 
 
 def refresh(symbol: str, interval) -> None:
@@ -133,6 +144,53 @@ def refresh(symbol: str, interval) -> None:
     # Atomic publication: previous snapshot replaced only on full success.
     state.snapshot = built
     state.failure = None
+
+
+def refresh_news(symbol: str) -> None:
+    """Fetch every configured news source. All or nothing at snapshot level.
+
+    Per-source failure is *not* a global failure: the snapshot reports PARTIAL
+    and keeps whatever did arrive. Only an inability to build a coherent
+    snapshot at all leaves the previous one in place.
+    """
+    state = st.session_state
+    if not symbol or not symbol.strip():
+        state.news_failure = "Enter a symbol before refreshing news."
+        return
+
+    service: NewsService | None = state.news_service
+    if service is None:
+        # Built on the first explicit refresh, never at start-up: constructing
+        # it may load the SEC ticker map, and nothing should reach the network
+        # because the app was opened.
+        try:
+            service = build_service()
+            state.news_service = service
+        except Exception as exc:
+            traceback.print_exc()
+            state.news_failure = f"Could not start the news service: {type(exc).__name__}"
+            return
+
+    try:
+        built = service.refresh(symbol)
+    except SymbolNotSupported as exc:
+        state.news_failure = str(exc)
+        return
+    except Exception as exc:
+        traceback.print_exc()
+        state.news_failure = f"News refresh failed: {type(exc).__name__}"
+        return
+
+    state.news_snapshot = built
+    state.news_failure = None
+
+
+def render_news_panel() -> None:
+    state = st.session_state
+    if state.news_failure:
+        st.warning(state.news_failure)
+    snapshot = state.news_snapshot
+    render_news(None if snapshot is None else news_view(snapshot))
 
 
 def apply_open_long(request) -> None:
@@ -202,6 +260,13 @@ def render_controls() -> None:
     st.sidebar.caption(
         "Refresh fetches settled bars only — the bar currently forming is never "
         "included, and there is no control to include it."
+    )
+
+    if st.sidebar.button("Refresh news", key="refresh_news_button"):
+        refresh_news(symbol)
+    st.sidebar.caption(
+        "News is fetched only when you press this. There is no scheduler and "
+        "nothing runs in the background."
     )
 
 
@@ -307,9 +372,13 @@ def main() -> None:
     render_controls()
     render_failure()
 
-    research_tab, paper_tab = st.tabs(["Research", "Paper portfolio"])
+    research_tab, news_tab, paper_tab = st.tabs(
+        ["Research", "News", "Paper portfolio"]
+    )
     with research_tab:
         render_research()
+    with news_tab:
+        render_news_panel()
     with paper_tab:
         render_paper()
 
