@@ -31,6 +31,15 @@ data/processed/*
 # third-party content must never be committed.
 data/news/
 
+# Locally ingested external feed entries and their transport checkpoints.
+# Downloaded third-party content must never be committed.
+data/feeds/
+
+# Your own feed list. Ignored because it names the sites this machine will
+# fetch, which is local configuration rather than project code. The committed
+# config/external_feeds.example.json shows the format.
+config/external_feeds.local.json
+
 # Keep empty data folders in Git
 !data/raw/.gitkeep
 !data/processed/.gitkeep

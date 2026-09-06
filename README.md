@@ -17,8 +17,10 @@ An educational, evidence-driven quantitative market-research and
 **Phase 6 — Research assessment: implemented.**
 **Phase 7 — Local research dashboard: implemented.**
 **Phase 8 — News and company announcements: implemented.**
+**Phase 9 — External RSS/Atom feeds: implemented.**
 
-Paper-trade execution is not implemented. Phase 9 has not been started.
+Paper-trade execution is not implemented. Telegram is deferred — see
+[ADR 0007](docs/adr/0007-external-feeds.md).
 
 Phase 3 expresses research *hypotheses* that classify evidence. It contains no
 trading logic and measures nothing about outcomes — a classification is not a
@@ -51,6 +53,17 @@ snapshot that never changes a `ResearchAssessment` and never opens a paper
 position. Symbols are supported where the SEC ticker map resolves a CIK; EDGAR
 needs a contact address in `SEC_USER_AGENT` (see `.env.example`), and Yahoo news
 works without it. See **[docs/news.md](docs/news.md)**.
+
+Phase 9 adds **external RSS/Atom feeds** you configure yourself. Copy
+`config/external_feeds.example.json` to `config/external_feeds.local.json`
+(git-ignored) and press *Refresh feeds*; only feeds listed there are ever
+fetched, and no link inside an entry is followed. Like Phase 8 it **records but
+does not interpret**, and it reaches neither research nor paper trading. Trust
+labels are your own and are shown as such — nothing verifies that a feed belongs
+to whoever it claims to. An Atom `updated` with no `published` is recorded as an
+*update* time, never relabelled as a publication. Telegram is **deferred** —
+input and output — for the reasons in the ADR. Zero new dependencies. See
+**[docs/feeds.md](docs/feeds.md)**.
 
 ## Target architecture
 
@@ -119,6 +132,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/research_assessment.md](docs/research_assessment.md)** (Phase 6),
 **[docs/dashboard.md](docs/dashboard.md)** (Phase 7),
 **[docs/news.md](docs/news.md)** (Phase 8),
+**[docs/feeds.md](docs/feeds.md)** (Phase 9),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -126,7 +140,8 @@ and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-convention
 risk engine), **[ADR 0004](docs/adr/0004-research-assessment.md)** (research
 assessment), **[ADR 0005](docs/adr/0005-local-dashboard.md)** (local
 dashboard), **[ADR 0006](docs/adr/0006-news-and-announcements.md)** (news and
-announcements).
+announcements), **[ADR 0007](docs/adr/0007-external-feeds.md)** (external
+feeds).
 
 ### The core idea
 
@@ -173,7 +188,13 @@ cached = store.read(SeriesKey("AAPL", Interval.DAY_1, "yfinance"))
 
 Copy `.env.example` to `.env` and fill in your own values. `.env` is
 git-ignored; API keys never belong in code, in logs or in commits. Phase 1
-needs no credentials at all.
+needs no credentials at all, and neither do the Phase 9 external feeds — they
+read public feeds over HTTPS and carry no credentials of any kind.
+
+Your feed list lives in `config/external_feeds.local.json` (git-ignored, copied
+from `config/external_feeds.example.json`). Ingested feed entries live in
+`data/feeds/`, also git-ignored — downloaded third-party content is never
+committed.
 
 Downloaded market data lives in `data/raw/` and `data/processed/`, both
 git-ignored — datasets are never committed.

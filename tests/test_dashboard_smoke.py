@@ -307,8 +307,13 @@ def test_the_research_panel_offers_no_paper_action_control():
     keys = {b.key for b in app.button}
     # refresh_news_button is a Phase 8 sidebar information-refresh control, not
     # a paper action: it fetches news and cannot open or close a position.
+    # refresh_feeds_button is the Phase 9 equivalent for external RSS/Atom feeds.
+    # Both are named individually rather than matched by prefix: the point of
+    # this assertion is that every control is accounted for, so a future button
+    # must be argued for here rather than admitted by a pattern.
     assert keys <= {
-        "refresh_button", "refresh_news_button", OPEN_SUBMIT, CLOSE_SUBMIT,
+        "refresh_button", "refresh_news_button", "refresh_feeds_button",
+        OPEN_SUBMIT, CLOSE_SUBMIT,
     }
 
 

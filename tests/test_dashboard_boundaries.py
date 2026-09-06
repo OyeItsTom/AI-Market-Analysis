@@ -416,18 +416,58 @@ def test_phase_seven_calls_no_dynamic_execution(path):
             }, f"{path.name} calls {node.func.id}()"
 
 
+#: Filesystem primitives, matched on the method name alone. Nothing in this
+#: repository legitimately names a domain method any of these, so a match here
+#: is a real touch of the filesystem whatever the receiver is.
+FILE_PRIMITIVES = frozenset({
+    "open", "read_text", "write_text", "read_bytes", "write_bytes",
+    "to_csv", "read_csv", "unlink", "mkdir", "rmdir", "touch",
+})
+
+#: Modules whose ``load``/``dump`` really are serialization I/O. These verbs are
+#: matched **only** when qualified by one of these names, because ``load`` and
+#: ``dump`` are also ordinary abstraction verbs -- ``CheckpointStore.load()``
+#: reads a domain object through a store, and ``os.remove`` is a real deletion.
+IO_MODULES = frozenset({
+    "json", "pickle", "marshal", "shelve", "yaml", "toml", "csv", "os", "shutil",
+})
+
+
 @pytest.mark.parametrize("path", DASHBOARD_FILES + APPLICATION_FILES, ids=lambda p: p.name)
 def test_phase_seven_opens_no_files(path):
-    """No persistence and no user-controlled file access anywhere in Phase 7."""
+    """Phase 7 reaches the filesystem through no primitive of its own.
+
+    ADR 0005: "Phase 7 opens no files at all." The dashboard and the application
+    layer are a read-through view -- they hold no state on disk and never reach
+    around a storage abstraction to touch the filesystem directly.
+
+    What is checked is the *primitive*, not the verb. An earlier version failed
+    any attribute call named ``load``, which flagged ``self._checkpoints.load()``
+    -- a domain object read through a store -- as file I/O, while missing
+    ``Path.read_bytes`` entirely. It also let Phase 8's ``NewsStore`` persistence
+    through purely because its methods are named ``write_document`` rather than
+    ``dump``, so it was enforcing a naming convention rather than the boundary.
+
+    Storage *abstractions* (``CheckpointStore``, ``FeedStore``, ``NewsStore``)
+    are the approved route and are deliberately not flagged: later phases are
+    allowed to persist, through those, from their own layers. What no file here
+    may do is open, read or write one itself.
+    """
     tree = ast.parse(path.read_text(), filename=str(path))
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            if isinstance(node.func, ast.Name) and node.func.id == "open":
-                pytest.fail(f"{path.name} calls open()")
-            if isinstance(node.func, ast.Attribute) and node.func.attr in {
-                "write_text", "read_text", "to_csv", "read_csv", "dump", "load"
-            }:
-                pytest.fail(f"{path.name} performs file I/O via {node.func.attr}")
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in FILE_PRIMITIVES:
+            pytest.fail(f"{path.name} calls {node.func.id}()")
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in FILE_PRIMITIVES:
+                pytest.fail(f"{path.name} performs file I/O via .{node.func.attr}()")
+            receiver = node.func.value
+            if isinstance(receiver, ast.Name) and receiver.id in IO_MODULES:
+                pytest.fail(
+                    f"{path.name} performs file I/O via "
+                    f"{receiver.id}.{node.func.attr}()"
+                )
 
 
 def test_phase_seven_never_touches_the_csv_bar_store():
@@ -495,9 +535,15 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
     # The news_* keys are Phase 8 additions and are whole objects too:
     # news_snapshot is a complete NewsSnapshot, news_service an application
     # dependency, news_failure a complete classified failure.
+    # The feed_* keys are the Phase 9 equivalents and hold the same three shapes:
+    # feed_snapshot is one whole coherent FeedSnapshot, feed_service the
+    # application dependency, feed_failure a complete classified failure string.
+    # Listed individually, never by prefix: a key such as feed_items or
+    # feed_documents would be fragmented state and must still fail here.
     assert assigned <= {
         "snapshot", "failure", "paper", "paper_error", "provider", "clock",
         "news_snapshot", "news_service", "news_failure",
+        "feed_snapshot", "feed_service", "feed_failure",
     }
     for forbidden in ("observations", "assessment", "features", "series"):
         assert forbidden not in assigned

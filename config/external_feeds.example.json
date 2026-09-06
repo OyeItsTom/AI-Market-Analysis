@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Copy this file to config/external_feeds.local.json and edit it.",
+    "The .local.json file is git-ignored and is the ONLY source of feed URLs:",
+    "nothing typed into the dashboard is ever fetched, and no URL found inside",
+    "a feed entry is ever followed.",
+    "",
+    "declared_trust_class is YOUR label, not a verification. Writing",
+    "'official_feed' does not make this dashboard check that the feed belongs",
+    "to whoever it claims to. The label is stored with each entry and shown as",
+    "'configured by you' so it can never read as a fact this system checked.",
+    "",
+    "configured_symbols records why you added the feed. It creates the only",
+    "association this system will claim: 'from a feed configured for AAPL'.",
+    "No entry is matched to a symbol by reading its text."
+  ],
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "sec-press-releases",
+      "type": "RSS",
+      "url": "https://www.sec.gov/news/pressreleases.rss",
+      "display_name": "SEC press releases",
+      "declared_trust_class": "official_feed",
+      "configured_symbols": [],
+      "enabled": false
+    },
+    {
+      "source_id": "example-company-blog",
+      "type": "RSS",
+      "url": "https://example.com/blog/feed.xml",
+      "display_name": "Example Corp engineering blog",
+      "declared_trust_class": "publisher_feed",
+      "configured_symbols": ["AAPL"],
+      "enabled": false
+    },
+    {
+      "source_id": "example-community",
+      "type": "RSS",
+      "url": "https://example.com/community/feed.xml",
+      "display_name": "An unaffiliated commentary feed",
+      "declared_trust_class": "community_feed",
+      "configured_symbols": ["AAPL", "MSFT"],
+      "enabled": false
+    }
+  ]
+}
