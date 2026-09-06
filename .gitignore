@@ -40,6 +40,11 @@ data/feeds/
 # config/external_feeds.example.json shows the format.
 config/external_feeds.local.json
 
+# Your own scan universes. Ignored for the same reason: which symbols this
+# machine scans is local configuration. config/universes.example.json shows
+# the format and is never loaded automatically.
+config/universes.local.json
+
 # Keep empty data folders in Git
 !data/raw/.gitkeep
 !data/processed/.gitkeep
