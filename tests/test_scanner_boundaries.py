@@ -155,12 +155,22 @@ def test_the_scanner_imports_only_the_standard_library_and_permitted_domains(pat
 # -- no earlier phase learns about the scanner ---------------------------
 
 
-def test_no_existing_module_imports_the_scanner():
-    """Stages A-D are self-contained; nothing wires into them yet."""
-    for path in sorted(SRC.rglob("*.py")):
-        if "scanner" in path.parts:
-            continue
-        assert not imports_package(imported(path), "src.scanner"), path
+def test_only_the_orchestrator_imports_the_scanner_domain():
+    """The scanner is reached through the application layer, like everything else.
+
+    Stage E adds exactly one consumer. A second one appearing -- especially in
+    the dashboard -- would mean the layering had been bypassed.
+    """
+    consumers = [
+        path for path in sorted(SRC.rglob("*.py"))
+        if "scanner" not in path.parts and imports_package(imported(path), "src.scanner")
+    ]
+    assert [p.relative_to(SRC).as_posix() for p in consumers] == ["application/scanner.py"]
+
+
+def test_the_dashboard_does_not_import_the_scanner_domain():
+    for path in sorted((SRC / "dashboard").rglob("*.py")):
+        assert not imports_package(imported(path), "src.scanner"), path.name
 
 
 # -- file I/O is confined to the adapter ---------------------------------
@@ -315,9 +325,8 @@ def test_no_scoring_identifier_exists(path):
         assert forbidden not in used, f"{path.name} defines {forbidden}"
 
 
-def test_stage_e_and_f_modules_do_not_exist_yet():
-    """Scope guard: this gate implements Stages A-D only."""
-    for path in ("src/application/scanner.py", "src/dashboard/scanner_view.py",
-                 "docs/scanner.md", "docs/adr/0008-market-scanner.md",
-                 "config/universes.local.json"):
+def test_stage_f_modules_do_not_exist_yet():
+    """Scope guard: Stage E is orchestration only -- no dashboard, no docs yet."""
+    for path in ("src/dashboard/scanner_view.py", "docs/scanner.md",
+                 "docs/adr/0008-market-scanner.md", "config/universes.local.json"):
         assert not (REPO / path).exists(), f"{path} belongs to a later stage"
