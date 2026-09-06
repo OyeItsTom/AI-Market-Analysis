@@ -305,7 +305,11 @@ def test_the_research_panel_offers_no_paper_action_control():
     """Every button in the app belongs to the sidebar or the paper forms."""
     app = refresh_with(start(), "AAPL")
     keys = {b.key for b in app.button}
-    assert keys <= {"refresh_button", OPEN_SUBMIT, CLOSE_SUBMIT}
+    # refresh_news_button is a Phase 8 sidebar information-refresh control, not
+    # a paper action: it fetches news and cannot open or close a position.
+    assert keys <= {
+        "refresh_button", "refresh_news_button", OPEN_SUBMIT, CLOSE_SUBMIT,
+    }
 
 
 def test_there_is_no_control_for_unsettled_bars_or_basis():
@@ -407,3 +411,108 @@ def test_a_genuine_provider_failure_does_use_an_error():
     app.run()
     app = refresh_with(app, "AAPL")
     assert any("Refresh failed at" in e.value for e in app.error)
+
+
+# -- the news panel must actually work in the real app ------------------
+
+
+class _FakeNewsService:
+    """Stands in for the real service without touching a network."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def refresh(self, symbol):
+        from datetime import datetime, timezone
+
+        from src.application.news import NewsSnapshot, RefreshStatus
+        from src.news.source import IngestionCounters, SourceOutcome, SourceResult
+
+        self.calls.append(symbol)
+        return NewsSnapshot(
+            symbol=symbol,
+            built_at=datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc),
+            documents=(), links=(),
+            source_results=(SourceResult("yahoo", SourceOutcome.NO_ITEMS,
+                                         IngestionCounters()),),
+            status=RefreshStatus.ALL_OK,
+        )
+
+
+def test_the_news_panel_builds_a_service_when_none_was_injected(monkeypatch):
+    """Regression: the app never built one, so News Refresh always failed.
+
+    Every application-layer test injected a service, so the missing production
+    wiring was invisible until the real app was driven.
+    """
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+
+    app = start()
+    assert app.session_state["news_service"] is None, "nothing is built at start-up"
+
+    app.sidebar.text_input(key="symbol_input").set_value("AAPL")
+    app = press(app, "refresh_news_button")
+
+    assert app.session_state["news_service"] is not None, "no service was built"
+    assert app.session_state["news_failure"] is None
+    assert app.session_state["news_snapshot"] is not None
+    assert built.calls == ["AAPL"]
+
+
+def test_opening_the_app_never_builds_or_fetches_news():
+    app = start()
+    assert app.session_state["news_service"] is None
+    assert app.session_state["news_snapshot"] is None
+    assert app.session_state["news_failure"] is None
+
+
+def test_an_ordinary_rerun_never_fetches_news(monkeypatch):
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+
+    app = start()
+    app.sidebar.text_input(key="symbol_input").set_value("AAPL")
+    app = press(app, "refresh_news_button")
+    assert built.calls == ["AAPL"]
+
+    for value in ("MSFT", "TSLA"):
+        app.sidebar.text_input(key="symbol_input").set_value(value).run()
+    assert built.calls == ["AAPL"], "a rerun must not refetch news"
+
+
+def test_a_market_refresh_never_fetches_news(monkeypatch):
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+    app = refresh_with(start(), "AAPL")
+    assert built.calls == [], "the market Refresh button must not touch news"
+
+
+def test_a_news_refresh_never_fetches_market_data(monkeypatch):
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+    app = start()
+    app.sidebar.text_input(key="symbol_input").set_value("AAPL")
+    app = press(app, "refresh_news_button")
+    assert app.session_state["provider"].calls == [], "news refresh fetched bars"
+    assert app.session_state["snapshot"] is None
+
+
+def test_a_news_refresh_never_touches_paper_state(monkeypatch):
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+    app = start()
+    before = app.session_state["paper"].portfolio
+    app.sidebar.text_input(key="symbol_input").set_value("AAPL")
+    app = press(app, "refresh_news_button")
+    assert app.session_state["paper"].portfolio is before
+    assert app.session_state["paper"].last_decision is None
+
+
+def test_an_empty_symbol_news_refresh_builds_nothing(monkeypatch):
+    built = _FakeNewsService()
+    monkeypatch.setattr("src.application.news.build_service", lambda **kw: built)
+    app = start()
+    app = press(app, "refresh_news_button")
+    assert built.calls == []
+    assert app.session_state["news_failure"] is not None
