@@ -670,6 +670,217 @@ def news_view(snapshot) -> NewsView:
     )
 
 
+# -- external feeds (Phase 9) -------------------------------------------
+
+LABEL_FEED_PUBLISHED = "Publisher's stated publication time"
+LABEL_FEED_UPDATED = "Publisher's stated update time"
+LABEL_FEED_OBSERVED = "First seen by this dashboard"
+
+TOOLTIP_FEED_UPDATED = (
+    "The feed gave an update time and no publication time. It is shown as an "
+    "update, because calling it a publication time would state something the "
+    "publisher did not."
+)
+TOOLTIP_FEED_TRUST = (
+    "This label comes from your own configuration file. Nothing about the feed "
+    "has been verified by this dashboard."
+)
+
+FEEDS_DISCLAIMER = (
+    "External feeds only — entries exactly as their publishers wrote them. "
+    "Nothing here is analysed, scored, ranked or fact-checked, and nothing here "
+    "reaches research, assessments or paper trading."
+)
+
+FEEDS_TRUST_DISCLAIMER = (
+    "Trust labels are yours, not ours: they record how you described a feed when "
+    "you added it. This dashboard does not verify that a feed is who it claims "
+    "to be."
+)
+
+#: One approved phrase per availability basis. The vocabulary lives here so no
+#: renderer can invent a friendlier word for a weaker claim.
+_FEED_BASIS_LABEL = {
+    "source_published": LABEL_FEED_PUBLISHED,
+    "source_updated": LABEL_FEED_UPDATED,
+    "system_observed": LABEL_FEED_OBSERVED,
+    "unknown": "No usable time",
+}
+
+
+@dataclass(frozen=True)
+class FeedItemRow:
+    """One feed entry, formatted. Carries no judgement of any kind."""
+
+    title: str
+    publisher: str
+    source_id: str
+    source_name: str
+    trust_label: str
+    trust_class: str
+    association: str
+    url: str
+    is_safe_url: bool
+    source_time_label: str
+    source_time: str
+    retrieved_at: str
+    availability_basis: str
+    excerpt: str = ""
+    symbols: str = ""
+    revision: int = 1
+
+    @property
+    def is_revision(self) -> bool:
+        """Whether the publisher has changed this entry since we first stored it."""
+        return self.revision > 1
+
+    @property
+    def revision_note(self) -> str:
+        if not self.is_revision:
+            return ""
+        return (
+            f"Revision {self.revision}: the publisher changed this entry after we "
+            "first stored it. Earlier versions are kept."
+        )
+
+
+def feed_item_rows(snapshot, *, recent: int = 50) -> tuple[FeedItemRow, ...]:
+    """Format a FeedSnapshot's items in the order the snapshot supplies.
+
+    The order is not recomputed here. Chronology belongs to the application
+    layer, and re-sorting by trust class in the view would let a label typed
+    into a config file rearrange time.
+    """
+    from src.feeds.validation import is_safe_display_url
+
+    rows: list[FeedItemRow] = []
+    for item in snapshot.items[:recent]:
+        definition = snapshot.definition_for(item.source_id)
+        symbols = snapshot.symbols_for(item)
+        rows.append(
+            FeedItemRow(
+                title=item.title,
+                publisher=item.publisher,
+                source_id=item.source_id,
+                source_name=definition.display_name if definition else item.source_id,
+                # Read from the item, never from today's configuration: renaming a
+                # feed "official" now must not relabel what we stored last week.
+                trust_label=item.declared_trust_class.label,
+                trust_class=item.declared_trust_class.value,
+                association=(
+                    ", ".join(
+                        f"From a feed configured for {symbol}" for symbol in symbols
+                    )
+                    if symbols
+                    else "This feed is not configured for any symbol"
+                ),
+                url=item.canonical_url,
+                is_safe_url=is_safe_display_url(item.canonical_url),
+                source_time_label=_FEED_BASIS_LABEL.get(
+                    item.availability_basis.value, "No usable time"
+                ),
+                source_time=_stamp(item.source_time),
+                retrieved_at=_stamp(item.retrieved_at),
+                availability_basis=item.availability_basis.value,
+                excerpt=item.excerpt,
+                symbols=", ".join(symbols),
+                revision=item.revision,
+            )
+        )
+    return tuple(rows)
+
+
+@dataclass(frozen=True)
+class FeedSourceRow:
+    """One feed's result, worded so a partial refresh cannot read as success."""
+
+    source_id: str
+    source_name: str
+    outcome: str
+    is_healthy: bool
+    detail: str
+    counters: str
+    trust_label: str = ""
+    url_host: str = ""
+
+
+@dataclass(frozen=True)
+class FeedsView:
+    built_at: str
+    status: str
+    is_partial: bool
+    all_failed: bool
+    is_configured: bool
+    rows: tuple[FeedItemRow, ...]
+    sources: tuple[FeedSourceRow, ...]
+    item_count: int
+    unconfigured_message: str = ""
+    integrity_warning: str | None = None
+    disclaimer: str = FEEDS_DISCLAIMER
+    trust_disclaimer: str = FEEDS_TRUST_DISCLAIMER
+
+    @property
+    def status_note(self) -> str:
+        if not self.is_configured:
+            return "No feeds are configured, so nothing was fetched."
+        if self.all_failed:
+            return "No configured feed could be reached. Nothing below has been updated."
+        if self.is_partial:
+            return (
+                "Partial refresh: at least one feed did not answer. What is shown may "
+                "be missing entries from that feed."
+            )
+        return "Every configured feed answered."
+
+
+def feeds_view(snapshot) -> FeedsView:
+    """Format a FeedSnapshot. State and ordering come from the snapshot."""
+    from src.feeds.identity import url_host
+
+    status = snapshot.status.value
+    sources = []
+    for result in snapshot.source_results:
+        definition = snapshot.definition_for(result.source_id)
+        sources.append(
+            FeedSourceRow(
+                source_id=result.source_id,
+                source_name=definition.display_name if definition else result.source_id,
+                outcome=result.outcome.value.replace("_", " ").upper(),
+                is_healthy=result.is_healthy,
+                detail=result.detail,
+                counters=result.counters.describe(),
+                trust_label=(
+                    definition.declared_trust_class.label if definition else ""
+                ),
+                url_host=url_host(definition.url) if definition else "",
+            )
+        )
+    warning = (
+        f"Some stored entries could not be read and were left untouched: "
+        f"{snapshot.integrity.describe()}"
+        if snapshot.has_integrity_warning
+        else None
+    )
+    return FeedsView(
+        built_at=_stamp(snapshot.built_at),
+        status=status.replace("_", " ").upper(),
+        is_partial=status == "partial",
+        all_failed=status == "all_failed",
+        is_configured=snapshot.is_configured,
+        rows=feed_item_rows(snapshot),
+        sources=tuple(sources),
+        item_count=len(snapshot.items),
+        unconfigured_message="" if snapshot.is_configured else _feeds_unconfigured(),
+        integrity_warning=warning,
+    )
+
+
+def _feeds_unconfigured() -> str:
+    from src.application.feeds import UNCONFIGURED_MESSAGE
+
+    return UNCONFIGURED_MESSAGE
+
+
 __all__ = [
     "MarketView",
     "market_view",
@@ -712,4 +923,16 @@ __all__ = [
     "TOOLTIP_BAR_OPENED",
     "TOOLTIP_EVALUABLE_FROM",
     "TOOLTIP_ASSESSMENT_AS_OF",
+    "FeedItemRow",
+    "feed_item_rows",
+    "FeedSourceRow",
+    "FeedsView",
+    "feeds_view",
+    "FEEDS_DISCLAIMER",
+    "FEEDS_TRUST_DISCLAIMER",
+    "LABEL_FEED_PUBLISHED",
+    "LABEL_FEED_UPDATED",
+    "LABEL_FEED_OBSERVED",
+    "TOOLTIP_FEED_UPDATED",
+    "TOOLTIP_FEED_TRUST",
 ]

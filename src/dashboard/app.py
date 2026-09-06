@@ -48,9 +48,11 @@ from src.application import (
     default_provider,
     display_names,
 )
+from src.application.feeds import FeedService, build_service as build_feed_service
 from src.application.news import NewsService, SymbolNotSupported, build_service
 from src.application.view_models import (
     RESEARCH_DISCLAIMER,
+    feeds_view,
     news_view,
     assessment_view,
     decision_view,
@@ -66,6 +68,7 @@ from src.dashboard.paper_view import (
     render_open_form,
     render_portfolio,
 )
+from src.dashboard.feeds_view import render_feeds
 from src.dashboard.news_view import render_news
 from src.dashboard.research_view import (
     render_assessment,
@@ -110,6 +113,15 @@ def init_session() -> None:
         state.news_snapshot = None
     if "news_failure" not in state:
         state.news_failure = None
+    if "feed_service" not in state:
+        # Injectable, like the provider and the news service: a test seeds a
+        # service whose fetch is a fake, so the feeds panel is exercised
+        # without a network.
+        state.feed_service = None
+    if "feed_snapshot" not in state:
+        state.feed_snapshot = None
+    if "feed_failure" not in state:
+        state.feed_failure = None
 
 
 def refresh(symbol: str, interval) -> None:
@@ -183,6 +195,50 @@ def refresh_news(symbol: str) -> None:
 
     state.news_snapshot = built
     state.news_failure = None
+
+
+def refresh_feeds() -> None:
+    """Fetch every configured feed. Symbol-independent by design.
+
+    Feeds are configured, not searched: a feed covers whatever its publisher
+    puts in it, so this refresh takes no symbol and the panel is not scoped to
+    the one in the sidebar. Per-feed failure is not a global failure -- the
+    snapshot reports PARTIAL and keeps whatever did arrive.
+    """
+    state = st.session_state
+
+    service: FeedService | None = state.feed_service
+    if service is None:
+        # Built on the first explicit refresh, never at start-up: nothing
+        # should reach the network because the app was opened.
+        try:
+            service = build_feed_service()
+            state.feed_service = service
+        except Exception as exc:
+            traceback.print_exc()
+            state.feed_failure = (
+                f"Could not start the feeds service: {type(exc).__name__}. "
+                "Check config/external_feeds.local.json."
+            )
+            return
+
+    try:
+        built = service.refresh()
+    except Exception as exc:
+        traceback.print_exc()
+        state.feed_failure = f"Feed refresh failed: {type(exc).__name__}"
+        return
+
+    state.feed_snapshot = built
+    state.feed_failure = None
+
+
+def render_feeds_panel() -> None:
+    state = st.session_state
+    if state.feed_failure:
+        st.warning(state.feed_failure)
+    snapshot = state.feed_snapshot
+    render_feeds(None if snapshot is None else feeds_view(snapshot))
 
 
 def render_news_panel() -> None:
@@ -267,6 +323,13 @@ def render_controls() -> None:
     st.sidebar.caption(
         "News is fetched only when you press this. There is no scheduler and "
         "nothing runs in the background."
+    )
+
+    if st.sidebar.button("Refresh feeds", key="refresh_feeds_button"):
+        refresh_feeds()
+    st.sidebar.caption(
+        "Only the feeds listed in your configuration file are fetched, and only "
+        "when you press this. Feeds are not tied to the symbol above."
     )
 
 
@@ -372,13 +435,15 @@ def main() -> None:
     render_controls()
     render_failure()
 
-    research_tab, news_tab, paper_tab = st.tabs(
-        ["Research", "News", "Paper portfolio"]
+    research_tab, news_tab, feeds_tab, paper_tab = st.tabs(
+        ["Research", "News", "External feeds", "Paper portfolio"]
     )
     with research_tab:
         render_research()
     with news_tab:
         render_news_panel()
+    with feeds_tab:
+        render_feeds_panel()
     with paper_tab:
         render_paper()
 
