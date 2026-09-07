@@ -325,8 +325,8 @@ def test_no_scoring_identifier_exists(path):
         assert forbidden not in used, f"{path.name} defines {forbidden}"
 
 
-def test_stage_f_modules_do_not_exist_yet():
-    """Scope guard: Stage E is orchestration only -- no dashboard, no docs yet."""
-    for path in ("src/dashboard/scanner_view.py", "docs/scanner.md",
-                 "docs/adr/0008-market-scanner.md", "config/universes.local.json"):
+def test_stage_g_modules_do_not_exist_yet():
+    """Scope guard: docs and the runtime config belong to a later stage."""
+    for path in ("docs/scanner.md", "docs/adr/0008-market-scanner.md",
+                 "config/universes.local.json"):
         assert not (REPO / path).exists(), f"{path} belongs to a later stage"

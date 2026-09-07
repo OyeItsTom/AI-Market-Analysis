@@ -48,6 +48,7 @@ from src.application.snapshot import (
 )
 from src.data.models import Interval
 from src.data.provider import MarketDataProvider
+from src.scanner.config import load_configuration
 from src.scanner.eligibility import eligibility_for, error_for
 from src.scanner.models import (
     MAX_ERROR_DETAIL_CHARS,
@@ -58,6 +59,7 @@ from src.scanner.models import (
     ScanErrorCode,
     StructuralCategory,
     SymbolScanResult,
+    UniverseConfiguration,
     UniverseDefinition,
     status_for,
 )
@@ -107,6 +109,17 @@ class SnapshotBuilder(Protocol):
 
 
 ProgressCallback = Callable[[ScanProgress], None]
+
+
+def load_universes(path: str | None = None) -> UniverseConfiguration:
+    """Read the configured universes through the scanner's config adapter.
+
+    Re-exported here so the dashboard reaches configuration the same way it
+    reaches everything else -- through the application layer. It keeps
+    ``src.dashboard`` free of any scanner-domain import, and keeps the file read
+    where it belongs: inside the adapter, never in a view or in ``app.py``.
+    """
+    return load_configuration(path)
 
 
 def research_policy_fingerprint() -> str:
@@ -325,6 +338,7 @@ def ranked_rows(snapshot: MarketScanSnapshot) -> tuple[SymbolScanResult, ...]:
 
 __all__ = [
     "SCANNER_INTERVALS",
+    "load_universes",
     "ScanRequestError",
     "ScanProgress",
     "ProgressCallback",

@@ -231,9 +231,10 @@ def test_no_research_state_is_mutated():
 # -- scope ---------------------------------------------------------------
 
 
-def test_stage_f_files_do_not_exist_yet():
-    for path in ("src/dashboard/scanner_view.py", "docs/scanner.md",
-                 "docs/adr/0008-market-scanner.md", "config/universes.local.json"):
+def test_stage_g_files_do_not_exist_yet():
+    """Scope guard: Stage F adds the dashboard; docs remain Stage G."""
+    for path in ("docs/scanner.md", "docs/adr/0008-market-scanner.md",
+                 "config/universes.local.json"):
         assert not (REPO / path).exists(), f"{path} belongs to a later stage"
 
 

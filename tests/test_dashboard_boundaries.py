@@ -122,6 +122,10 @@ def test_dashboard_imports_only_streamlit_stdlib_and_application(path):
         assert root in {
             "__future__", "dataclasses", "datetime", "decimal", "typing",
             "traceback", "enum", "types", "pathlib", "collections",
+            # Phase 10: the market scan shows transient elapsed time while it
+            # runs. Named individually, like every other entry here -- the set
+            # stays a literal allowlist rather than a stdlib detector.
+            "time",
         }, f"{path.name} imports unexpected third-party module {name}"
 
 
@@ -540,10 +544,19 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
     # application dependency, feed_failure a complete classified failure string.
     # Listed individually, never by prefix: a key such as feed_items or
     # feed_documents would be fragmented state and must still fail here.
+    # The scan_* keys are the Phase 10 additions and hold the same whole shapes:
+    # scan_snapshot is one complete MarketScanSnapshot, scan_universes a whole
+    # UniverseConfiguration, scan_failure a complete classified failure string,
+    # scan_universe_id the selected universe identity and
+    # pending_research_symbol a one-shot navigation handoff. Listed
+    # individually for the same reason: scan_results, scan_counters or
+    # scan_progress would be pieces of a snapshot and must still fail here.
     assert assigned <= {
         "snapshot", "failure", "paper", "paper_error", "provider", "clock",
         "news_snapshot", "news_service", "news_failure",
         "feed_snapshot", "feed_service", "feed_failure",
+        "scan_snapshot", "scan_failure", "scan_universes",
+        "scan_universe_id", "pending_research_symbol",
     }
     for forbidden in ("observations", "assessment", "features", "series"):
         assert forbidden not in assigned

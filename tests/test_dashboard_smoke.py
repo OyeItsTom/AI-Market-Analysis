@@ -308,11 +308,15 @@ def test_the_research_panel_offers_no_paper_action_control():
     # refresh_news_button is a Phase 8 sidebar information-refresh control, not
     # a paper action: it fetches news and cannot open or close a position.
     # refresh_feeds_button is the Phase 9 equivalent for external RSS/Atom feeds.
-    # Both are named individually rather than matched by prefix: the point of
+    # reload_universes_button and scan_market_button are the Phase 10 pair on
+    # Market Overview. Neither can open or close a position: one re-reads the
+    # local universe configuration, the other runs a read-only market scan.
+    # All are named individually rather than matched by prefix: the point of
     # this assertion is that every control is accounted for, so a future button
     # must be argued for here rather than admitted by a pattern.
     assert keys <= {
         "refresh_button", "refresh_news_button", "refresh_feeds_button",
+        "reload_universes_button", "scan_market_button",
         OPEN_SUBMIT, CLOSE_SUBMIT,
     }
 
