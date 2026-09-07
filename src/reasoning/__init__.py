@@ -34,8 +34,10 @@ express that.
 
 The package now also holds the versioned prompt contract, the validators that
 turn an untrusted provider payload into a trusted snapshot, and the provider
-contract itself -- a Protocol and an operational error type, with no adapter
-behind it. There is still no network here, and no vendor.
+contract itself -- a Protocol and an operational error type -- together with a
+single real adapter behind that contract. That adapter is the one file here that
+names a vendor and the one that can reach a network; everything else remains a
+pure leaf, and a boundary test enforces the difference rather than trusting it.
 """
 
 from __future__ import annotations
@@ -56,6 +58,7 @@ from .prompts import (
     TASK_INSTRUCTION,
     evidence_for_model,
 )
+from .anthropic_adapter import AnthropicReasoningProvider
 from .providers import (
     MAX_PROVIDER_DETAIL_CHARS,
     PROVIDER_FAILURE_CODES,
@@ -109,6 +112,7 @@ __all__ = [
     "MAX_VALIDATION_DETAIL_CHARS",
     "MAX_SYMBOL_CHARS",
     "PROVIDER_FAILURE_CODES",
+    "AnthropicReasoningProvider",
     "EvidencePacket",
     "PacketCounts",
     "PacketObservation",

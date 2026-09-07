@@ -129,11 +129,29 @@ VENDOR_SDKS = (
 )
 
 
+#: The one file permitted to name a vendor, and the one vendor it may name.
+#:
+#: Written as data rather than as an ``if`` so the exemption is a list somebody
+#: has to edit -- and so the test below can insist it is actually being used. A
+#: permission nobody exercises is a hole nobody is watching.
+VENDOR_EXEMPTIONS = {"anthropic_adapter.py": frozenset({"anthropic"})}
+
+
 @pytest.mark.parametrize("path", REASONING_FILES, ids=lambda p: p.name)
 @pytest.mark.parametrize("vendor", VENDOR_SDKS)
 def test_the_reasoning_domain_imports_no_model_vendor(path, vendor):
-    """Stage A has no provider at all; when one arrives it lives in an adapter,
-    never here."""
+    """One file may reach one vendor. Every other file, and every other vendor.
+
+    The adapter exists precisely so this ban can stay absolute everywhere else:
+    the moment a second module imports a model vendor, the package has stopped
+    being provider-neutral and the neutrality of the contract is decoration.
+    """
+    if vendor in VENDOR_EXEMPTIONS.get(path.name, frozenset()):
+        assert imports_package(imported(path), vendor), (
+            f"{path.name} is exempted for {vendor} but no longer imports it; "
+            "delete the exemption rather than leaving it open"
+        )
+        return
     assert not imports_package(imported(path), vendor), (
         f"{path.relative_to(REPO)} imports {vendor}"
     )
@@ -503,3 +521,153 @@ def test_the_snapshot_construction_sweep_actually_covers_providers():
     ]
     assert PROVIDERS in swept
     assert not _constructs_snapshot(PROVIDERS)
+
+
+# -- Stage D: one adapter, and only one --------------------------------------
+
+
+ADAPTER = REASONING / "anthropic_adapter.py"
+
+
+def test_the_adapter_exists_and_is_the_only_exemption():
+    assert ADAPTER in REASONING_FILES
+    assert set(VENDOR_EXEMPTIONS) == {ADAPTER.name}
+
+
+def test_the_vendor_name_appears_only_where_it_must():
+    """Import analysis is not enough: a name is contagious.
+
+    A vendor-shaped request body needs no import to be wrong, and a helper in a
+    neutral module named after one service is how "provider-neutral" quietly
+    becomes "one provider, plus adapters for the others". The package export is
+    permitted because it is the module path, not a vendor concept.
+    """
+    permitted = {ADAPTER.name, "__init__.py"}
+    for path in REASONING_FILES:
+        if path.name in permitted:
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        for vendor in ("anthropic", "openai", "gemini", "vertex", "bedrock"):
+            assert vendor not in text, f"{path.name} mentions {vendor}"
+
+
+def test_the_adapter_imports_only_stdlib_and_the_one_vendor():
+    """The SDK owns transport, so the adapter owns none of it.
+
+    No network module appears here -- that is what keeps the package-wide
+    network ban unamended and applying to this file like every other.
+    """
+    permitted = {"__future__", "json", "time", "typing", "anthropic"}
+    external = {
+        name for name in imported(ADAPTER)
+        if not name.startswith(".") and not name.startswith("src.")
+    }
+    assert external <= permitted, f"adapter imports {external - permitted}"
+
+
+def test_the_adapter_is_still_bound_by_every_unamended_sweep():
+    """The vendor ban is the only thing Stage D relaxed.
+
+    Network, filesystem, credential, dynamic-execution and clock bans all still
+    apply to the adapter unchanged, and this states that as a fact rather than
+    leaving it to be inferred from the absence of an exemption.
+    """
+    names = imported(ADAPTER)
+    for module in NETWORK_MODULES + BACKGROUND_MODULES + STORAGE_MODULES:
+        assert not imports_package(names, module), f"adapter imports {module}"
+    assert not (called(ADAPTER) & FILE_PRIMITIVES)
+    assert not (called_bare(ADAPTER) & {"eval", "exec", "compile", "__import__"})
+    # The clock ban is deliberately NOT exempted. It still bites an inline
+    # ``time.monotonic()`` and is satisfied only by an injected callable, which
+    # is exactly the outcome the ban was written to force.
+    assert not (called(ADAPTER) & {"now", "utcnow", "today", "time", "monotonic"})
+    text = ADAPTER.read_text(encoding="utf-8").lower()
+    for forbidden in ("api_key", "apikey", "getenv", "environ", "secret",
+                      "bearer", "authorization", "token="):
+        assert forbidden not in text, f"adapter mentions {forbidden}"
+
+
+def test_the_adapter_module_defines_exactly_one_provider():
+    """Pinned, so a factory, a client builder or a second response type has to
+    be argued for rather than appearing."""
+    tree = ast.parse(ADAPTER.read_text(encoding="utf-8"), filename=str(ADAPTER))
+    classes = [n.name for n in tree.body if isinstance(n, ast.ClassDef)]
+    functions = [n.name for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert classes == ["AnthropicReasoningProvider"], classes
+    assert functions == ["_require_positive_number", "_require_positive_int",
+                         "_canonical_json"], functions
+
+
+def test_the_adapter_keeps_no_second_copy_of_the_output_schema():
+    """It references the committed schema; it does not restate it.
+
+    A second literal would pass every test in this file while disagreeing with
+    the one the validator enforces -- the two would drift the first time either
+    was edited, and the drift would show up as unexplained provider failures.
+    """
+    text = ADAPTER.read_text(encoding="utf-8")
+    assert "OUTPUT_SCHEMA" in text
+    for fragment in ("additionalProperties", "minItems", '"claims"',
+                     '"uncertainties"', '"evidence_ids"'):
+        assert fragment not in text, f"adapter restates {fragment}"
+
+
+def test_the_adapter_constructs_no_snapshot_and_runs_no_validator():
+    assert not _constructs_snapshot(ADAPTER)
+    # It has no reason to name the trusted type at all. Importing it changes no
+    # behaviour on its own, which is exactly why it is worth refusing: it is the
+    # cheap first half of a change nobody would approve as a whole.
+    for node in ast.walk(ast.parse(ADAPTER.read_text(encoding="utf-8"))):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                assert alias.name.split(".")[-1] != "ReasoningSnapshot"
+    tree = ast.parse(ADAPTER.read_text(encoding="utf-8"), filename=str(ADAPTER))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "validation":
+            raise AssertionError("the adapter imports the validator")
+    offenders = called(ADAPTER) & {
+        "validate_provider_response", "parse_payload", "validate_grounding",
+        "validate_boundary_language", "validate_consistency",
+    }
+    assert not offenders, f"the adapter calls {offenders}"
+
+
+def test_the_adapter_never_constructs_a_vendor_client():
+    """It may import the library; it may not create a session with it.
+
+    Constructing a client is where a credential gets read and a connection gets
+    opened. The adapter receives one already built, so the constructor call has
+    no business appearing here at all -- and banning the call is what stops a
+    plausible-looking ``client or Anthropic()`` default from reintroducing both.
+    """
+    offenders = called(ADAPTER) & {"Anthropic", "AsyncAnthropic", "AnthropicBedrock",
+                                   "AnthropicVertex", "AnthropicAWS", "AnthropicFoundry",
+                                   "AnthropicBedrockMantle", "Client"}
+    assert not offenders, f"the adapter constructs {offenders}"
+
+
+def test_the_adapter_reaches_the_domain_by_name_not_by_module():
+    """``from .models import X``, never ``from . import models``.
+
+    A module object is a namespace the AST cannot follow: with one in hand,
+    ``object.__new__(models.ReasoningSnapshot)`` and
+    ``getattr(models, "Reasoning" + "Snapshot")()`` both build trusted state
+    while every name-based guard reports the file as clean -- both were tried
+    and both survived until this. Importing the symbols the adapter actually
+    uses costs nothing and removes the namespace entirely.
+    """
+    for node in ast.walk(ast.parse(ADAPTER.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.level and node.module is None:
+            raise AssertionError(
+                "the adapter imports a sibling module as an object: "
+                f"{[alias.name for alias in node.names]}"
+            )
+
+
+def test_the_adapter_has_no_retry_machinery():
+    offenders = called(ADAPTER) & {"sleep", "retry", "backoff", "jitter",
+                                   "uniform", "randint", "random"}
+    assert not offenders, f"adapter calls {offenders}"
+    tree = ast.parse(ADAPTER.read_text(encoding="utf-8"), filename=str(ADAPTER))
+    assert not [n for n in ast.walk(tree) if isinstance(n, ast.While)]
