@@ -21,7 +21,6 @@ from src.reasoning.models import (
     MAX_PACKET_OBSERVATIONS,
     MAX_REASON_CODES,
     MAX_REASONING_TEXT_CHARS,
-    ClaimType,
     EvidencePacket,
     PacketCounts,
     PacketObservation,
@@ -32,6 +31,7 @@ from src.reasoning.models import (
     ReasoningKind,
     ReasoningRequest,
     ReasoningSnapshot,
+    ReasoningSummary,
     ReasoningUsageMetadata,
     canonical_bytes,
 )
@@ -91,12 +91,20 @@ def test_there_is_exactly_one_reasoning_kind():
     assert ReasoningKind.EXPLAIN_RESEARCH.value == "explain_research"
 
 
-def test_claim_types_are_exactly_three_and_exclude_uncertainty():
-    """Uncertainty cannot cite absent evidence, so it is not a claim type."""
-    assert [member.name for member in ClaimType] == [
-        "SUPPORTING", "CONTRADICTING", "CONTEXT",
-    ]
-    assert not hasattr(ClaimType, "UNCERTAINTY")
+def test_a_claim_carries_no_model_authored_type():
+    """The model must not label its own prose.
+
+    A claim typed "supporting" that actually contradicts renders under a heading
+    its own citations disagree with, and no deterministic check can catch it.
+    Grouping is derived from the cited observations instead, so the label has
+    nowhere to be wrong.
+    """
+    import src.reasoning.models as models
+
+    assert not hasattr(models, "ClaimType")
+    assert {f.name for f in dataclasses.fields(ReasoningClaim)} == {
+        "text", "evidence_ids",
+    }
 
 
 def test_failure_codes_are_exactly_these_and_split_operational_from_content():
@@ -121,7 +129,8 @@ def test_no_model_exposes_a_score_or_recommendation_field():
         "target", "conviction", "signal", "action", "allocation", "expected_return",
     )
     for model in (EvidencePacket, PacketObservation, PacketCounts, ReasoningClaim,
-                  ReasoningSnapshot, ReasoningRequest, ReasoningUsageMetadata):
+                  ReasoningSummary, ReasoningSnapshot, ReasoningRequest,
+                  ReasoningUsageMetadata):
         names = {f.name for f in dataclasses.fields(model)}
         for word in forbidden:
             offenders = [name for name in names if word in name]
@@ -135,6 +144,7 @@ def test_no_model_exposes_a_score_or_recommendation_field():
     PacketCounts, PacketObservation, EvidencePacket, ReasoningClaim,
     ReasoningRequest, ReasoningUsageMetadata, ProviderReasoningResponse,
     ReasoningSnapshot,
+    ReasoningSummary,
 ])
 def test_every_stage_a_model_is_frozen(model):
     assert model.__dataclass_params__.frozen, model.__name__
@@ -259,8 +269,7 @@ def test_an_observation_id_cannot_contradict_its_own_identity():
 
 def test_a_claim_may_not_cite_the_same_evidence_twice():
     with pytest.raises(ReasoningError, match="same evidence twice"):
-        ReasoningClaim(text="x", claim_type=ClaimType.SUPPORTING,
-                       evidence_ids=("a", "a"))
+        ReasoningClaim(text="x", evidence_ids=("a", "a"))
 
 
 def test_too_many_observations_are_refused():
@@ -285,7 +294,7 @@ def test_too_many_reason_codes_are_refused():
 def test_text_fields_are_bounded():
     with pytest.raises(ReasoningError, match="exceeds"):
         ReasoningClaim(text="x" * (MAX_REASONING_TEXT_CHARS + 1),
-                       claim_type=ClaimType.CONTEXT, evidence_ids=())
+                       evidence_ids=("fact:a",))
     with pytest.raises(ReasoningError, match="exceeds"):
         packet(symbol="A" * 33)
 
@@ -300,7 +309,7 @@ def test_empty_and_control_character_text_is_refused():
 def test_a_claim_may_not_cite_more_than_the_cap():
     with pytest.raises(ReasoningError, match="more than"):
         ReasoningClaim(
-            text="x", claim_type=ClaimType.SUPPORTING,
+            text="x",
             evidence_ids=tuple(f"id-{i}" for i in range(MAX_EVIDENCE_IDS_PER_CLAIM + 1)),
         )
 
@@ -378,26 +387,25 @@ def test_a_snapshot_reports_every_id_it_relies_on():
         reasoning_kind=ReasoningKind.EXPLAIN_RESEARCH, symbol="AAPL", data_cutoff=T0,
         evidence_fingerprint="e" * 16, reasoning_fingerprint="r" * 16,
         prompt_id="explain_research", prompt_version=1, output_schema_version=1,
-        summary="Two hypotheses classified bullish.", summary_evidence_ids=("fact:a",),
-        claims=(
-            ReasoningClaim(text="c1", claim_type=ClaimType.SUPPORTING,
-                           evidence_ids=("obs:x",)),
-        ),
+        summary=ReasoningSummary(text="Two hypotheses classified bullish.",
+                                 evidence_ids=("fact:a",)),
+        claims=(ReasoningClaim(text="c1", evidence_ids=("obs:x",)),),
         uncertainties=("The ensemble is still warming up.",),
-        missing_information=(), usage=usage(), generated_at=T0,
+        usage=usage(), generated_at=T0,
     )
     assert snapshot.cited_evidence_ids == frozenset({"fact:a", "obs:x"})
 
 
 def test_a_snapshot_refuses_more_claims_than_the_cap():
-    claim = ReasoningClaim(text="c", claim_type=ClaimType.CONTEXT, evidence_ids=())
+    claim = ReasoningClaim(text="c", evidence_ids=("fact:a",))
     with pytest.raises(ReasoningError, match="at most"):
         ReasoningSnapshot(
             reasoning_kind=ReasoningKind.EXPLAIN_RESEARCH, symbol="AAPL",
             data_cutoff=T0, evidence_fingerprint="e", reasoning_fingerprint="r",
-            prompt_id="p", prompt_version=1, output_schema_version=1, summary="s",
-            summary_evidence_ids=(), claims=tuple(claim for _ in range(MAX_CLAIMS + 1)),
-            uncertainties=(), missing_information=(), usage=usage(), generated_at=T0,
+            prompt_id="p", prompt_version=1, output_schema_version=1,
+            summary=ReasoningSummary(text="s", evidence_ids=("fact:a",)),
+            claims=tuple(claim for _ in range(MAX_CLAIMS + 1)),
+            uncertainties=(), usage=usage(), generated_at=T0,
         )
 
 
@@ -584,3 +592,53 @@ def test_insertion_order_never_reaches_the_canonical_form():
     forward = observation(evidence={"a_feature": 1.0, "z_feature": 2.0})
     backward = observation(evidence={"z_feature": 2.0, "a_feature": 1.0})
     assert canonical_bytes(forward.canonical()) == canonical_bytes(backward.canonical())
+
+
+# -- the summary is inseparable from its grounding -----------------------
+
+
+def test_a_summary_must_cite_at_least_one_piece_of_evidence():
+    """The headline is the sentence a reader is most likely to quote."""
+    with pytest.raises(ReasoningError, match="at least one"):
+        ReasoningSummary(text="Two hypotheses agreed.", evidence_ids=())
+
+
+def test_a_summary_must_not_cite_the_same_evidence_twice():
+    with pytest.raises(ReasoningError, match="same evidence twice"):
+        ReasoningSummary(text="x", evidence_ids=("fact:a", "fact:a"))
+
+
+def test_summary_text_and_citations_are_one_record():
+    """Grouping them removes the state where one exists without the other."""
+    fields = {f.name for f in dataclasses.fields(ReasoningSnapshot)}
+    assert "summary" in fields
+    assert "summary_evidence_ids" not in fields
+    assert {f.name for f in dataclasses.fields(ReasoningSummary)} == {
+        "text", "evidence_ids",
+    }
+
+
+def test_a_snapshot_refuses_a_bare_string_summary():
+    with pytest.raises(ReasoningError, match="ReasoningSummary"):
+        ReasoningSnapshot(
+            reasoning_kind=ReasoningKind.EXPLAIN_RESEARCH, symbol="AAPL",
+            data_cutoff=T0, evidence_fingerprint="e", reasoning_fingerprint="r",
+            prompt_id="p", prompt_version=1, output_schema_version=1,
+            summary="a bare string", claims=(), uncertainties=(),
+            usage=usage(), generated_at=T0,
+        )
+
+
+def test_missing_information_was_collapsed_into_uncertainties():
+    """Two lists asked the model to make a distinction nothing could verify."""
+    fields = {f.name for f in dataclasses.fields(ReasoningSnapshot)}
+    assert "uncertainties" in fields
+    assert "missing_information" not in fields
+
+
+def test_the_snapshot_has_no_field_for_advice_or_limitations():
+    """Known limits are deterministic UI text, not something a model restates."""
+    fields = {f.name for f in dataclasses.fields(ReasoningSnapshot)}
+    for forbidden in ("limitations", "recommendation", "target", "confidence",
+                      "probability", "ranking", "action", "expected_return"):
+        assert not any(forbidden in name for name in fields), forbidden

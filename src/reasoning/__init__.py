@@ -44,6 +44,20 @@ from .evidence import (
     reasoning_fingerprint,
     research_context_fingerprint,
 )
+from .prompts import (
+    OUTPUT_SCHEMA,
+    OUTPUT_SCHEMA_VERSION,
+    PROMPT_FINGERPRINT,
+    PROMPT_ID,
+    PROMPT_VERSION,
+    SYSTEM_POLICY,
+    TASK_INSTRUCTION,
+    evidence_for_model,
+)
+from .validation import (
+    ReasoningValidationError,
+    validate_provider_response,
+)
 from .models import (
     EVIDENCE_SCHEMA_VERSION,
     MAX_EVIDENCE_ID_CHARS,
@@ -52,8 +66,8 @@ from .models import (
     MAX_PACKET_OBSERVATIONS,
     MAX_REASON_CODES,
     MAX_REASONING_TEXT_CHARS,
+    MAX_VALIDATION_DETAIL_CHARS,
     MAX_SYMBOL_CHARS,
-    ClaimType,
     EvidencePacket,
     PacketCounts,
     PacketObservation,
@@ -64,19 +78,27 @@ from .models import (
     ReasoningKind,
     ReasoningRequest,
     ReasoningSnapshot,
+    ReasoningSummary,
     ReasoningUsageMetadata,
 )
 
 __all__ = [
     "EVIDENCE_SCHEMA_VERSION",
+    "OUTPUT_SCHEMA",
+    "OUTPUT_SCHEMA_VERSION",
+    "PROMPT_FINGERPRINT",
+    "PROMPT_ID",
+    "PROMPT_VERSION",
+    "SYSTEM_POLICY",
+    "TASK_INSTRUCTION",
     "MAX_EVIDENCE_ID_CHARS",
     "MAX_HYPOTHESIS_ID_CHARS",
     "MAX_OBSERVATION_EVIDENCE_ITEMS",
     "MAX_PACKET_OBSERVATIONS",
     "MAX_REASON_CODES",
     "MAX_REASONING_TEXT_CHARS",
+    "MAX_VALIDATION_DETAIL_CHARS",
     "MAX_SYMBOL_CHARS",
-    "ClaimType",
     "EvidencePacket",
     "PacketCounts",
     "PacketObservation",
@@ -87,9 +109,13 @@ __all__ = [
     "ReasoningKind",
     "ReasoningRequest",
     "ReasoningSnapshot",
+    "ReasoningSummary",
     "ReasoningUsageMetadata",
+    "ReasoningValidationError",
     "build_packet",
+    "evidence_for_model",
     "evidence_fingerprint",
     "reasoning_fingerprint",
     "research_context_fingerprint",
+    "validate_provider_response",
 ]

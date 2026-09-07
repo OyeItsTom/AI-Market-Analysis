@@ -59,6 +59,11 @@ MAX_CLAIMS = 24
 MAX_EVIDENCE_IDS_PER_CLAIM = 16
 MAX_NOTES = 12
 
+#: Validation failures name a field and a category, never the offending text.
+#: Echoing a rejected payload into a log or a UI string gives it a second
+#: chance at the reader it was rejected to protect.
+MAX_VALIDATION_DETAIL_CHARS = 300
+
 
 class ReasoningError(Exception):
     """Base class for every reasoning-domain failure."""
@@ -78,23 +83,6 @@ class ReasoningKind(str, Enum):
     """
 
     EXPLAIN_RESEARCH = "explain_research"
-
-    def __str__(self) -> str:  # pragma: no cover - trivial
-        return self.value
-
-
-class ClaimType(str, Enum):
-    """How a claim stands relative to the assessment being explained.
-
-    There is deliberately no ``UNCERTAINTY`` member. Uncertainty is a statement
-    about evidence that is *absent*, and absent evidence cannot be cited; giving
-    it a claim type would force either an empty citation list -- which grounding
-    must reject -- or an invented one. It lives in its own field instead.
-    """
-
-    SUPPORTING = "supporting"
-    CONTRADICTING = "contradicting"
-    CONTEXT = "context"
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.value
@@ -714,22 +702,57 @@ class ReasoningClaim:
     Atomic on purpose. A paragraph with a citation at the end cannot be checked
     -- nothing says which sentence the citation covers. A claim that must name
     its evidence can be checked by a loop.
+
+    There is deliberately **no claim type**. Letting the model label its own
+    prose "supporting" or "contradicting" would put a classification the code
+    cannot verify in front of the reader: a mislabelled claim renders under a
+    heading its own citations disagree with. Grouping is instead derived from
+    the states of the observations a claim actually cites, which cannot be
+    wrong in a way the reader sees.
     """
 
     text: str
-    claim_type: ClaimType
     evidence_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
         set_(self, "text",
              require_text(self.text, "claim text", maximum=MAX_REASONING_TEXT_CHARS))
-        set_(self, "claim_type", ClaimType(self.claim_type))
         ids = _require_str_tuple(self.evidence_ids, "evidence_ids",
                                  maximum=MAX_EVIDENCE_IDS_PER_CLAIM,
                                  item_max=MAX_EVIDENCE_ID_CHARS)
         if len(set(ids)) != len(ids):
             raise ReasoningError("a claim must not cite the same evidence twice")
+        set_(self, "evidence_ids", ids)
+
+
+@dataclass(frozen=True)
+class ReasoningSummary:
+    """The headline sentence and the evidence it rests on, inseparably.
+
+    One record rather than two loose fields, because text without citations and
+    citations without text are both meaningless -- and a shape that can express
+    neither cannot drift into them.
+    """
+
+    text: str
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        set_ = object.__setattr__
+        set_(self, "text",
+             require_text(self.text, "summary text", maximum=MAX_REASONING_TEXT_CHARS))
+        ids = _require_str_tuple(self.evidence_ids, "summary evidence_ids",
+                                 maximum=MAX_EVIDENCE_IDS_PER_CLAIM,
+                                 item_max=MAX_EVIDENCE_ID_CHARS)
+        if len(set(ids)) != len(ids):
+            raise ReasoningError("a summary must not cite the same evidence twice")
+        if not ids:
+            raise ReasoningError(
+                "a summary must cite at least one piece of evidence; an "
+                "ungrounded headline is the one sentence a reader is most "
+                "likely to quote"
+            )
         set_(self, "evidence_ids", ids)
 
 
@@ -751,11 +774,9 @@ class ReasoningSnapshot:
     prompt_id: str
     prompt_version: int
     output_schema_version: int
-    summary: str
-    summary_evidence_ids: tuple[str, ...]
+    summary: ReasoningSummary
     claims: tuple[ReasoningClaim, ...]
     uncertainties: tuple[str, ...]
-    missing_information: tuple[str, ...]
     usage: ReasoningUsageMetadata
     generated_at: datetime
 
@@ -777,12 +798,8 @@ class ReasoningSnapshot:
              require_count(self.prompt_version, "prompt_version"))
         set_(self, "output_schema_version",
              require_count(self.output_schema_version, "output_schema_version"))
-        set_(self, "summary",
-             require_text(self.summary, "summary", maximum=MAX_REASONING_TEXT_CHARS))
-        set_(self, "summary_evidence_ids",
-             _require_str_tuple(self.summary_evidence_ids, "summary_evidence_ids",
-                                maximum=MAX_EVIDENCE_IDS_PER_CLAIM,
-                                item_max=MAX_EVIDENCE_ID_CHARS))
+        if not isinstance(self.summary, ReasoningSummary):
+            raise ReasoningError("summary must be a ReasoningSummary")
 
         claims = tuple(self.claims)
         if len(claims) > MAX_CLAIMS:
@@ -797,16 +814,13 @@ class ReasoningSnapshot:
         set_(self, "uncertainties",
              _require_str_tuple(self.uncertainties, "uncertainties",
                                 maximum=MAX_NOTES, item_max=MAX_REASONING_TEXT_CHARS))
-        set_(self, "missing_information",
-             _require_str_tuple(self.missing_information, "missing_information",
-                                maximum=MAX_NOTES, item_max=MAX_REASONING_TEXT_CHARS))
         if not isinstance(self.usage, ReasoningUsageMetadata):
             raise ReasoningError("usage must be a ReasoningUsageMetadata")
 
     @property
     def cited_evidence_ids(self) -> frozenset[str]:
         """Every id this explanation relies on, summary included."""
-        ids = set(self.summary_evidence_ids)
+        ids = set(self.summary.evidence_ids)
         for claim in self.claims:
             ids |= set(claim.evidence_ids)
         return frozenset(ids)
@@ -823,12 +837,12 @@ __all__ = [
     "MAX_FINGERPRINT_CHARS",
     "MAX_HYPOTHESIS_ID_CHARS",
     "MAX_NOTES",
+    "MAX_VALIDATION_DETAIL_CHARS",
     "MAX_OBSERVATION_EVIDENCE_ITEMS",
     "MAX_PACKET_OBSERVATIONS",
     "MAX_REASON_CODES",
     "MAX_REASONING_TEXT_CHARS",
     "MAX_SYMBOL_CHARS",
-    "ClaimType",
     "EvidencePacket",
     "PacketCounts",
     "PacketObservation",
@@ -839,6 +853,7 @@ __all__ = [
     "ReasoningKind",
     "ReasoningRequest",
     "ReasoningSnapshot",
+    "ReasoningSummary",
     "ReasoningUsageMetadata",
     "ID_DELIMITERS",
     "canonical_bytes",

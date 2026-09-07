@@ -54,6 +54,21 @@ def called(path: pathlib.Path) -> set[str]:
     return names
 
 
+def called_bare(path: pathlib.Path) -> set[str]:
+    """Only builtins called by bare name.
+
+    ``re.compile`` is not dynamic code execution, and ``some.open`` on a byte
+    stream is not a filesystem call. Merging bare names with attribute names
+    conflates the builtin with any method that happens to share its spelling.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+
 def test_the_reasoning_package_exists():
     assert REASONING_FILES
     assert (REASONING / "models.py") in REASONING_FILES
@@ -154,6 +169,10 @@ BACKGROUND_MODULES = (
     # ban above, since the module being imported is a string the AST scan
     # cannot follow. A pure domain package has no legitimate use for it.
     "importlib",
+    # builtins would reach the dangerous callables by attribute, which
+    # called_bare deliberately does not follow. Banning the module closes that
+    # route without re-flagging re.compile.
+    "builtins",
 )
 
 
@@ -193,7 +212,13 @@ def test_the_reasoning_domain_calls_no_file_primitive(path):
 
 @pytest.mark.parametrize("path", REASONING_FILES, ids=lambda p: p.name)
 def test_the_reasoning_domain_evaluates_nothing_dynamically(path):
-    offenders = called(path) & {"eval", "exec", "compile", "__import__"}
+    """Scoped to the builtins, called by bare name.
+
+    ``re.compile`` compiles a regex, not code; flagging it would force the
+    module to reach for a worse pattern API to satisfy a test that had
+    misidentified what it was looking at.
+    """
+    offenders = called_bare(path) & {"eval", "exec", "compile", "__import__"}
     assert not offenders, f"{path.name} calls {offenders}"
 
 
@@ -253,3 +278,85 @@ def test_every_public_export_resolves():
 
     for name in package.__all__:
         assert hasattr(package, name), f"__all__ names missing {name}"
+
+
+# -- Stage B modules stay as pure as Stage A ------------------------------
+
+
+STAGE_B_FILES = [REASONING / "prompts.py", REASONING / "validation.py"]
+
+
+def test_the_stage_b_modules_exist():
+    for path in STAGE_B_FILES:
+        assert path in REASONING_FILES, path
+
+
+@pytest.mark.parametrize("path", STAGE_B_FILES, ids=lambda p: p.name)
+def test_stage_b_modules_use_only_permitted_stdlib(path):
+    """Prompt and validation are pure: text, hashing and pattern matching.
+
+    ``re`` and ``unicodedata`` are the only additions Stage B needs, both
+    stdlib, so no dependency and no ban-list entry changes.
+    """
+    permitted = {
+        "__future__", "hashlib", "typing", "re", "unicodedata", "datetime",
+    }
+    external = {
+        name for name in imported(path)
+        if not name.startswith(".") and not name.startswith("src.")
+    }
+    assert external <= permitted, f"{path.name} imports {external - permitted}"
+
+
+@pytest.mark.parametrize("path", STAGE_B_FILES, ids=lambda p: p.name)
+def test_stage_b_modules_import_only_within_this_package(path):
+    """Relative imports inside the package are how the leaf property holds."""
+    for name in imported(path):
+        assert not name.startswith("src."), f"{path.name} imports {name}"
+
+
+def _constructs_snapshot(path: pathlib.Path) -> bool:
+    """Whether this file builds a ReasoningSnapshot, under any ordinary name.
+
+    Matching only ``ReasoningSnapshot(...)`` by bare name was trivially evaded
+    two ways that normal Python code writes every day: importing it under an
+    alias, and calling it through its module. Both are checked here. This is
+    not complete static analysis and does not pretend to be -- it enforces the
+    ownership rule against the forms a developer would actually write.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    local_names = {"ReasoningSnapshot"}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name.split(".")[-1] == "ReasoningSnapshot":
+                    local_names.add(alias.asname or alias.name)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in local_names:
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "ReasoningSnapshot":
+            return True
+    return False
+
+
+def test_only_validation_constructs_the_trusted_snapshot():
+    """The trust boundary is enforced here, not by Python.
+
+    A constructor cannot be made private, so the type split alone is a
+    convention. This test is what turns it into a rule: production code may
+    build a ReasoningSnapshot in exactly one module, the one that validated it.
+    """
+    offenders = [
+        path.relative_to(SRC).as_posix()
+        for path in sorted(SRC.rglob("*.py"))
+        if "__pycache__" not in path.parts and _constructs_snapshot(path)
+    ]
+    assert offenders == ["reasoning/validation.py"], offenders
+
+
+def test_no_model_authored_claim_type_survives_anywhere():
+    for path in REASONING_FILES:
+        assert "ClaimType" not in path.read_text(encoding="utf-8"), path.name
