@@ -360,3 +360,146 @@ def test_only_validation_constructs_the_trusted_snapshot():
 def test_no_model_authored_claim_type_survives_anywhere():
     for path in REASONING_FILES:
         assert "ClaimType" not in path.read_text(encoding="utf-8"), path.name
+
+
+# -- Stage C: the provider contract stays a contract ----------------------
+
+
+PROVIDERS = REASONING / "providers.py"
+
+
+def test_the_provider_module_exists_and_is_a_module_not_a_package():
+    """One file, deliberately.
+
+    A ``providers/`` directory is where vendor adapters accumulate, and Stage C
+    has no vendor. Keeping it a single module means adding one is a visible
+    decision rather than dropping a file into a folder that was already there.
+    """
+    assert PROVIDERS in REASONING_FILES
+    assert not (REASONING / "providers").exists()
+
+
+def test_the_provider_module_uses_only_permitted_stdlib():
+    """A Protocol and an error type need nothing but ``typing``.
+
+    Anything else appearing here would be transport, and transport is what this
+    module describes rather than performs.
+    """
+    permitted = {"__future__", "typing"}
+    external = {
+        name for name in imported(PROVIDERS)
+        if not name.startswith(".") and not name.startswith("src.")
+    }
+    assert external <= permitted, f"providers.py imports {external - permitted}"
+
+
+def test_the_provider_module_imports_only_within_this_package():
+    for name in imported(PROVIDERS):
+        assert not name.startswith("src."), f"providers.py imports {name}"
+
+
+def test_the_provider_module_names_no_vendor_even_in_prose():
+    """The import ban is not enough on its own.
+
+    A vendor-shaped request body needs no import to be wrong: the moment a
+    message envelope appears here, the abstraction has stopped being
+    provider-neutral and has become one provider's shape wearing a neutral
+    name.
+    """
+    text = PROVIDERS.read_text(encoding="utf-8").lower()
+    for vendor in ("anthropic", "openai", "gemini", "vertex", "bedrock", "cohere",
+                   "mistral", "ollama", "llama", "gpt-", "claude"):
+        assert vendor not in text, f"providers.py mentions {vendor}"
+    for envelope in ('"role"', "'role'", "messages=", "system=", "assistant",
+                     "completion", "chat"):
+        assert envelope not in text, f"providers.py carries {envelope}"
+
+
+def test_the_provider_module_does_not_validate():
+    """Transport and judgement are separate jobs, and this is the transport.
+
+    A provider that reached the validator could pre-screen its own output, and
+    the one thing a caller must be able to assume -- that what came back is
+    exactly what arrived -- would quietly stop being true.
+    """
+    text = PROVIDERS.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=str(PROVIDERS))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "validation":
+            raise AssertionError("providers.py imports the validator")
+    offenders = called(PROVIDERS) & {
+        "validate_provider_response", "parse_payload", "validate_grounding",
+        "validate_boundary_language", "validate_consistency",
+        "find_boundary_violation", "normalize_for_boundary",
+    }
+    assert not offenders, f"providers.py calls {offenders}"
+
+
+def test_the_provider_module_has_no_retry_machinery():
+    """Retry policy needs real failure semantics, and there are none yet.
+
+    A loop written now would encode a guess about how a service fails, and the
+    guess would be indistinguishable from a decision once it was in place.
+    """
+    offenders = called(PROVIDERS) & {"sleep", "retry", "backoff", "jitter",
+                                     "wait", "uniform", "randint", "random"}
+    assert not offenders, f"providers.py calls {offenders}"
+    tree = ast.parse(PROVIDERS.read_text(encoding="utf-8"), filename=str(PROVIDERS))
+    loops = [n for n in ast.walk(tree) if isinstance(n, (ast.While, ast.For))]
+    assert not loops or all(isinstance(n, ast.For) for n in loops), (
+        "providers.py contains a while loop"
+    )
+
+
+def test_the_provider_module_defines_exactly_the_contract_and_nothing_else():
+    """The surface is pinned, because every way it could grow is a mistake.
+
+    Three of them are worth naming. A second provider implementation shipping
+    here -- under any name, not only one spelled "fake" -- would be a
+    fabricator in the production package. A ``LLMResponse`` or ``TokenUsage``
+    class would be a competing type for something the domain already owns, and
+    the two would drift the first time one was edited. A helper that assembled
+    a vendor request body would make the neutral abstraction one vendor's shape
+    wearing a neutral name.
+
+    A name-based ban catches none of those; a pinned surface catches all of
+    them, and turns adding anything into a decision somebody has to defend.
+    """
+    tree = ast.parse(PROVIDERS.read_text(encoding="utf-8"), filename=str(PROVIDERS))
+    classes = [n.name for n in tree.body if isinstance(n, ast.ClassDef)]
+    functions = [n.name for n in tree.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert classes == ["ReasoningProviderError", "ReasoningProvider"], classes
+    assert functions == [], functions
+
+
+def test_no_test_double_ships_in_the_reasoning_package():
+    """The fake lives in the tests, the way every other fake in this repo does.
+
+    A fabricator exported from a production package is one import away from
+    being wired into the real path, and it would look exactly like a provider
+    while inventing everything it returned.
+    """
+    for path in REASONING_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                lowered = node.name.lower()
+                for marker in ("fake", "stub", "dummy", "mock", "recording"):
+                    assert marker not in lowered, f"{path.name} defines {node.name}"
+
+
+def test_the_snapshot_construction_sweep_actually_covers_providers():
+    """Verified, not re-asserted.
+
+    ``test_only_validation_constructs_the_trusted_snapshot`` already sweeps every
+    production file, so the useful thing to check is that providers.py is in the
+    set it sweeps -- a second, weaker copy of that test would be the kind of
+    duplicate that rots.
+    """
+    swept = [
+        path for path in sorted(SRC.rglob("*.py"))
+        if "__pycache__" not in path.parts
+    ]
+    assert PROVIDERS in swept
+    assert not _constructs_snapshot(PROVIDERS)

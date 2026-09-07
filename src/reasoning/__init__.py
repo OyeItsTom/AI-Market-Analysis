@@ -32,8 +32,10 @@ how it was reasoned about -- prompt, schema, provider, model. Changing the model
 must not make the underlying evidence look stale, and only separate digests can
 express that.
 
-Stage A is the domain alone. There is no provider, no prompt text, no validator
-and no network here.
+The package now also holds the versioned prompt contract, the validators that
+turn an untrusted provider payload into a trusted snapshot, and the provider
+contract itself -- a Protocol and an operational error type, with no adapter
+behind it. There is still no network here, and no vendor.
 """
 
 from __future__ import annotations
@@ -53,6 +55,12 @@ from .prompts import (
     SYSTEM_POLICY,
     TASK_INSTRUCTION,
     evidence_for_model,
+)
+from .providers import (
+    MAX_PROVIDER_DETAIL_CHARS,
+    PROVIDER_FAILURE_CODES,
+    ReasoningProvider,
+    ReasoningProviderError,
 )
 from .validation import (
     ReasoningValidationError,
@@ -95,10 +103,12 @@ __all__ = [
     "MAX_HYPOTHESIS_ID_CHARS",
     "MAX_OBSERVATION_EVIDENCE_ITEMS",
     "MAX_PACKET_OBSERVATIONS",
+    "MAX_PROVIDER_DETAIL_CHARS",
     "MAX_REASON_CODES",
     "MAX_REASONING_TEXT_CHARS",
     "MAX_VALIDATION_DETAIL_CHARS",
     "MAX_SYMBOL_CHARS",
+    "PROVIDER_FAILURE_CODES",
     "EvidencePacket",
     "PacketCounts",
     "PacketObservation",
@@ -107,6 +117,8 @@ __all__ = [
     "ReasoningError",
     "ReasoningFailureCode",
     "ReasoningKind",
+    "ReasoningProvider",
+    "ReasoningProviderError",
     "ReasoningRequest",
     "ReasoningSnapshot",
     "ReasoningSummary",
