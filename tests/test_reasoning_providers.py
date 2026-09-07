@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import timedelta
 
@@ -346,8 +347,28 @@ def test_c18_the_response_payload_is_a_read_only_view(packet, request_for):
 
 
 def test_c18_the_snapshot_does_not_reach_back_to_the_response(packet, request_for):
-    """Nothing unvalidated survives the conversion, by reachability not by
-    docstring."""
+    """Nothing unvalidated survives the conversion.
+
+    Reachability over **declared and attached** state. The earlier version of
+    this walker followed only ``dataclasses.fields``, which sounded like the
+    whole object but is only its declaration: a frozen dataclass without
+    ``__slots__`` still accepts ``object.__setattr__``, so a single line in the
+    validator --
+
+        object.__setattr__(snapshot, "_raw", response)
+
+    -- put the untrusted response on the trusted snapshot and walked straight
+    past a test whose name says that cannot happen. It was found by mutating
+    the validator and watching this file stay green.
+
+    What this now covers, stated exactly: identity with the response or its
+    payload, declared dataclass fields, instance ``__dict__`` values, and the
+    ordinary containers -- mappings (``mappingproxy`` included), tuples, lists,
+    sets. What it is not: a memory-safety proof, sandbox isolation, or complete
+    object-graph analysis. A custom descriptor, a ``__getattr__`` that
+    materialises on access, or a C-level container could still hold a reference
+    this never sees.
+    """
     fake = FakeReasoningProvider(payload=valid_payload(packet))
     response = fake.generate(request_for)
     snapshot = convert(request_for, response)
@@ -360,14 +381,65 @@ def test_c18_the_snapshot_does_not_reach_back_to_the_response(packet, request_fo
         seen.add(id(value))
         if value is response or value is response.payload:
             return True
-        if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            return any(reaches(getattr(value, f.name), depth + 1)
-                       for f in dataclasses.fields(value))
-        if isinstance(value, (tuple, list)):
-            return any(reaches(item, depth + 1) for item in value)
-        return False
 
-    assert not reaches(snapshot)
+        # Every applicable container, not the first one that matches. An object
+        # can be a dataclass *and* carry attributes that were never declared,
+        # and it is precisely the undeclared half that a smuggling change uses.
+        children: list = []
+        if not isinstance(value, type):
+            if dataclasses.is_dataclass(value):
+                children += [getattr(value, field.name)
+                             for field in dataclasses.fields(value)]
+            attributes = getattr(value, "__dict__", None)
+            if isinstance(attributes, Mapping):
+                children += list(attributes.values())
+        if isinstance(value, Mapping):
+            children += list(value.values())
+        elif isinstance(value, (tuple, list, set, frozenset)):
+            children += list(value)
+        return any(reaches(child, depth + 1) for child in children)
+
+    def walks(value) -> bool:
+        seen.clear()
+        return reaches(value)
+
+    # -- the walker can see what it claims to see ------------------------
+    #
+    # Without this the negative assertion below is a statement about the
+    # dataclass declaration wearing the word "reachability". Each probe is a
+    # route a smuggling change could actually take.
+    def smuggling(**attributes):
+        probe = convert(request_for, fake.generate(request_for))
+        for name, value in attributes.items():
+            object.__setattr__(probe, name, value)
+        return probe
+
+    assert walks(smuggling(_raw=response))
+    assert walks(smuggling(_payload=response.payload))
+    assert walks(smuggling(_nested={"x": [response]}))
+    assert walks(smuggling(_nested=({"x": response.payload},)))
+    # A set cannot hold the response itself -- its payload is a mappingproxy,
+    # so the frozen dataclass is unhashable -- but it can hold something
+    # hashable that points at it, which is the route that actually exists.
+    class Holder:
+        pass
+
+    holder = Holder()
+    holder.response = response
+    assert walks(smuggling(_nested={holder}))
+    assert walks(smuggling(_nested=frozenset({holder})))
+
+    # A cycle must terminate, and must not hide anything inside itself.
+    loop: dict = {"self": None}
+    loop["self"] = loop
+    assert not walks(loop)
+    baited: dict = {"self": None, "hidden": response}
+    baited["self"] = baited
+    assert walks(baited)
+
+    # -- and the real snapshot is clean ----------------------------------
+    assert not walks(snapshot)
+    assert not walks(convert(request_for, fake.generate(request_for)))
 
 
 # -- C15, C26: the request is not the provider's to change ----------------
