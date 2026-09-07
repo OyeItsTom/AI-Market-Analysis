@@ -325,8 +325,59 @@ def test_no_scoring_identifier_exists(path):
         assert forbidden not in used, f"{path.name} defines {forbidden}"
 
 
-def test_stage_g_modules_do_not_exist_yet():
-    """Scope guard: docs and the runtime config belong to a later stage."""
-    for path in ("docs/scanner.md", "docs/adr/0008-market-scanner.md",
-                 "config/universes.local.json"):
-        assert not (REPO / path).exists(), f"{path} belongs to a later stage"
+# -- what must never be committed, and what must always be there ----------
+#
+# These replace the Stage G scope guard. Two of the three paths it watched have
+# now legitimately arrived, so the guard becomes the permanent statement it was
+# standing in for: the runtime configuration stays out of the repository, and
+# the documentation stays in it.
+
+RUNTIME_CONFIG = "config/universes.local.json"
+
+
+def test_the_runtime_universe_config_is_never_committed():
+    """It names the symbols *this machine* scans, so it is local, not project.
+
+    Checked three ways because each catches a different mistake: present on
+    disk (someone about to commit it), tracked by git (someone already did),
+    and missing from .gitignore (nothing stopping either).
+    """
+    import subprocess
+
+    assert not (REPO / RUNTIME_CONFIG).exists(), (
+        f"{RUNTIME_CONFIG} is user-local runtime configuration and must not "
+        "exist in the repository"
+    )
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", RUNTIME_CONFIG],
+        cwd=REPO, capture_output=True, text=True,
+    ).stdout.strip()
+    assert tracked == "", f"{RUNTIME_CONFIG} is tracked by git"
+
+    # The literal line, not `git check-ignore`: that would also consult the
+    # developer's global excludes, so it could pass on one machine and fail on
+    # another while this file said nothing.
+    ignored = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert RUNTIME_CONFIG in ignored, f".gitignore does not ignore {RUNTIME_CONFIG}"
+
+    assert (REPO / "config" / "universes.example.json").is_file(), (
+        "the tracked example configuration is what makes the local file optional"
+    )
+
+
+PHASE_10_DOCS = ("docs/scanner.md", "docs/adr/0008-market-scanner.md")
+
+
+@pytest.mark.parametrize("path", PHASE_10_DOCS)
+def test_the_phase_ten_documentation_exists(path):
+    document = REPO / path
+    assert document.is_file(), f"{path} is missing"
+    assert document.read_text(encoding="utf-8").strip(), f"{path} is empty"
+
+
+def test_the_guide_names_the_runtime_and_example_configuration_paths():
+    """The one documented fact a reader can follow wrongly at no cost to us."""
+    guide = (REPO / "docs" / "scanner.md").read_text(encoding="utf-8")
+    for path in (RUNTIME_CONFIG, "config/universes.example.json"):
+        assert path in guide, f"docs/scanner.md never names {path}"

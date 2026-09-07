@@ -231,11 +231,39 @@ def test_no_research_state_is_mutated():
 # -- scope ---------------------------------------------------------------
 
 
-def test_stage_g_files_do_not_exist_yet():
-    """Scope guard: Stage F adds the dashboard; docs remain Stage G."""
-    for path in ("docs/scanner.md", "docs/adr/0008-market-scanner.md",
-                 "config/universes.local.json"):
-        assert not (REPO / path).exists(), f"{path} belongs to a later stage"
+def test_the_runtime_universe_config_is_never_committed():
+    """The one Phase 10 path that must stay out of the repository forever.
+
+    Was a Stage G scope guard; now a permanent invariant. Which symbols a
+    machine scans is local configuration, and the tracked example is what
+    makes the local file optional rather than required.
+    """
+    import subprocess
+
+    runtime = "config/universes.local.json"
+    assert not (REPO / runtime).exists(), f"{runtime} must not exist in the repo"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", runtime],
+        cwd=REPO, capture_output=True, text=True,
+    ).stdout.strip()
+    assert tracked == "", f"{runtime} is tracked by git"
+    # Asserted here as well as in tests/test_scanner_boundaries.py, on purpose.
+    # Deleting an assertion never fails the test that held it, so the rule that
+    # keeps this file out of the repository lives in two independent suites
+    # rather than one.
+    ignored = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert runtime in ignored, f".gitignore does not ignore {runtime}"
+    assert (REPO / "config" / "universes.example.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "path", ("docs/scanner.md", "docs/adr/0008-market-scanner.md")
+)
+def test_the_phase_ten_documentation_exists(path):
+    """The other half of the old guard: these were owed, and are now present."""
+    document = REPO / path
+    assert document.is_file(), f"{path} is missing"
+    assert document.read_text(encoding="utf-8").strip(), f"{path} is empty"
 
 
 def test_the_scanner_domain_still_imports_no_application_module():
