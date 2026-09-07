@@ -18,6 +18,7 @@ An educational, evidence-driven quantitative market-research and
 **Phase 7 — Local research dashboard: implemented.**
 **Phase 8 — News and company announcements: implemented.**
 **Phase 9 — External RSS/Atom feeds: implemented.**
+**Phase 10 — Market universe + multi-stock scanner: implemented.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -64,6 +65,18 @@ to whoever it claims to. An Atom `updated` with no `published` is recorded as an
 *update* time, never relabelled as a publication. Telegram is **deferred** —
 input and output — for the reasons in the ADR. Zero new dependencies. See
 **[docs/feeds.md](docs/feeds.md)**.
+
+Phase 10 adds a **market scanner**: a *Market Overview* tab that scans a bounded
+universe of symbols you configure yourself. Copy
+`config/universes.example.json` to `config/universes.local.json` (git-ignored)
+and press *Scan Market*; nothing is scanned until you do, and the example file
+is never loaded automatically. Results are ordered by the **structure of the
+research evidence** — there is no score, no confidence and no direction
+preference, and position means how much there is to inspect rather than which
+symbol is a better investment. Scans are daily-only, serial and manual;
+selecting a result only sets the Research symbol and fetches nothing. News and
+feeds reach neither the ordering nor the results, and the panel exposes no paper
+action. Zero new dependencies. See **[docs/scanner.md](docs/scanner.md)**.
 
 ## Target architecture
 
@@ -133,6 +146,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/dashboard.md](docs/dashboard.md)** (Phase 7),
 **[docs/news.md](docs/news.md)** (Phase 8),
 **[docs/feeds.md](docs/feeds.md)** (Phase 9),
+**[docs/scanner.md](docs/scanner.md)** (Phase 10),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -141,7 +155,8 @@ risk engine), **[ADR 0004](docs/adr/0004-research-assessment.md)** (research
 assessment), **[ADR 0005](docs/adr/0005-local-dashboard.md)** (local
 dashboard), **[ADR 0006](docs/adr/0006-news-and-announcements.md)** (news and
 announcements), **[ADR 0007](docs/adr/0007-external-feeds.md)** (external
-feeds).
+feeds), **[ADR 0008](docs/adr/0008-market-scanner.md)** (market universe and
+scanner).
 
 ### The core idea
 
@@ -195,6 +210,11 @@ Your feed list lives in `config/external_feeds.local.json` (git-ignored, copied
 from `config/external_feeds.example.json`). Ingested feed entries live in
 `data/feeds/`, also git-ignored — downloaded third-party content is never
 committed.
+
+Your scan universes live in `config/universes.local.json` (git-ignored, copied
+from `config/universes.example.json`). The example is a template and is never
+loaded automatically: with no local file the scanner has no universe and scans
+nothing.
 
 Downloaded market data lives in `data/raw/` and `data/processed/`, both
 git-ignored — datasets are never committed.

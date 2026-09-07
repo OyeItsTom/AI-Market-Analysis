@@ -32,6 +32,7 @@ half-updated one.
 
 from __future__ import annotations
 
+import time
 import traceback
 
 import streamlit as st
@@ -49,10 +50,18 @@ from src.application import (
     display_names,
 )
 from src.application.feeds import FeedService, build_service as build_feed_service
+from src.application.scanner import (
+    MarketScanner,
+    ScanProgress,
+    load_universes as load_universe_configuration,
+)
 from src.application.news import NewsService, SymbolNotSupported, build_service
 from src.application.view_models import (
     RESEARCH_DISCLAIMER,
+    SCANNER_INTERVAL_NOTE,
     feeds_view,
+    scanner_view,
+    universe_option_label,
     news_view,
     assessment_view,
     decision_view,
@@ -69,6 +78,7 @@ from src.dashboard.paper_view import (
     render_portfolio,
 )
 from src.dashboard.feeds_view import render_feeds
+from src.dashboard.scanner_view import render_market_overview
 from src.dashboard.news_view import render_news
 from src.dashboard.research_view import (
     render_assessment,
@@ -122,6 +132,23 @@ def init_session() -> None:
         state.feed_snapshot = None
     if "feed_failure" not in state:
         state.feed_failure = None
+    if "scan_snapshot" not in state:
+        # One whole MarketScanSnapshot, replaced only when a scan completes.
+        state.scan_snapshot = None
+    if "scan_failure" not in state:
+        # A *global* scan failure only. Per-symbol errors live inside the
+        # snapshot and never set this.
+        state.scan_failure = None
+    if "scan_universes" not in state:
+        # The whole UniverseConfiguration, including its load report. Loaded
+        # lazily the first time Market Overview needs it.
+        state.scan_universes = None
+    if "scan_universe_id" not in state:
+        state.scan_universe_id = None
+    if "pending_research_symbol" not in state:
+        # The safe handoff key. Never a widget key: assigning symbol_input
+        # after its widget exists raises StreamlitWidgetAlreadyInstantiatedError.
+        state.pending_research_symbol = None
 
 
 def refresh(symbol: str, interval) -> None:
@@ -195,6 +222,192 @@ def refresh_news(symbol: str) -> None:
 
     state.news_snapshot = built
     state.news_failure = None
+
+
+def load_universes(force: bool = False) -> str | None:
+    """Load the scan universes, returning an error message rather than raising.
+
+    Called lazily so opening the app reads no file, and on demand from Reload.
+    A failed reload deliberately leaves the last-good configuration in place: a
+    typo in a local file must not destroy a working selector. The error is
+    returned for this render only -- it is not stored, because a stale
+    configuration error would outlive the problem it described.
+    """
+    state = st.session_state
+    if state.scan_universes is not None and not force:
+        return None
+    try:
+        loaded = load_universe_configuration()
+    except Exception as exc:
+        traceback.print_exc()
+        return f"Could not read the universe configuration: {exc}"
+    state.scan_universes = loaded
+    return None
+
+
+def selected_universe():
+    """The chosen universe, falling back deterministically after a reload."""
+    state = st.session_state
+    configuration = state.scan_universes
+    if configuration is None:
+        return None
+    enabled = configuration.enabled
+    if not enabled:
+        state.scan_universe_id = None
+        return None
+    chosen = configuration.get(state.scan_universe_id) if state.scan_universe_id else None
+    if chosen is None or not chosen.enabled:
+        # The stored id vanished or was switched off in a reload. Fall back to
+        # the first enabled universe rather than leaving a dangling selection.
+        chosen = enabled[0]
+        state.scan_universe_id = chosen.universe_id
+    return chosen
+
+
+def scan_market(universe) -> None:
+    """Run one manual serial scan and publish it only if it completes.
+
+    The previous snapshot is left untouched until a new coherent one exists, so
+    a failed scan never costs the user the results they were reading.
+    """
+    state = st.session_state
+    progress = st.progress(0.0, text=f"Scanning 0 of {universe.symbol_count}…")
+    status = st.empty()
+    started = time.perf_counter()
+
+    def report(event: ScanProgress) -> None:
+        # Transient only: nothing about progress is stored in session state.
+        progress.progress(
+            event.completed / max(1, event.total),
+            text=f"Scanning {event.completed} of {event.total} — {event.symbol}",
+        )
+        status.caption(
+            f"{event.completed}/{event.total} · {time.perf_counter() - started:.1f}s "
+            f"elapsed · {event.failures} could not be scanned"
+        )
+
+    try:
+        built = MarketScanner(state.provider).scan(universe, progress=report)
+    except Exception as exc:
+        traceback.print_exc()
+        state.scan_failure = f"Market scan failed: {type(exc).__name__}: {exc}"[:300]
+        return
+    finally:
+        progress.empty()
+        status.empty()
+
+    # A PARTIAL or ALL_FAILED snapshot is a coherent result, not a global
+    # failure: those states describe the symbols, not the scan.
+    state.scan_snapshot = built
+    state.scan_failure = None
+
+
+def open_in_research(symbol: str) -> None:
+    """Hand a scanned symbol to the Research control, fetching nothing.
+
+    The value cannot be written to ``symbol_input`` here: that widget was built
+    earlier in this run and Streamlit refuses a later assignment. It is parked
+    on a non-widget key and applied at the top of the next run, before the
+    widget exists.
+    """
+    st.session_state.pending_research_symbol = symbol
+    st.rerun()
+
+
+def apply_pending_research_symbol() -> None:
+    """Apply a parked symbol *before* ``render_controls`` builds the widget.
+
+    This ordering is load-bearing. Assigning ``symbol_input`` after the widget
+    is instantiated raises ``StreamlitWidgetAlreadyInstantiatedError``.
+    """
+    state = st.session_state
+    pending = state.pending_research_symbol
+    if pending:
+        state["symbol_input"] = pending
+        state.pending_research_symbol = None
+
+
+def render_market_panel() -> None:
+    """Market Overview: universe controls, the scan action, and the results.
+
+    Every widget lives here; ``scanner_view`` only draws. Nothing on this panel
+    opens or closes a paper position -- selecting a result and opening it in
+    Research is the only action available.
+    """
+    state = st.session_state
+    st.caption(SCANNER_INTERVAL_NOTE)
+
+    reload_error = load_universes()
+    if st.button("Reload universes", key="reload_universes_button"):
+        reload_error = load_universes(force=True)
+    if reload_error:
+        # Shown for this render only; the last-good configuration is retained.
+        st.error(reload_error)
+
+    configuration = state.scan_universes
+    enabled = configuration.enabled if configuration is not None else ()
+
+    if not enabled:
+        st.info(
+            "No scan universes are configured. Copy "
+            "config/universes.example.json to config/universes.local.json and "
+            "edit your research universe."
+        )
+    else:
+        labels = {universe_option_label(u): u.universe_id for u in enabled}
+        current = selected_universe()
+        options = list(labels)
+        index = next(
+            (i for i, label in enumerate(options) if labels[label] == current.universe_id),
+            0,
+        )
+        chosen_label = st.selectbox(
+            "Universe", options, index=index, key="universe_select",
+            help="Only enabled universes from your local configuration are listed.",
+        )
+        state.scan_universe_id = labels[chosen_label]
+
+    universe = selected_universe()
+    if st.button("Scan Market", key="scan_market_button", type="primary",
+                 disabled=universe is None):
+        if universe is not None:
+            scan_market(universe)
+
+    if state.scan_failure:
+        st.error(state.scan_failure)
+
+    snapshot = state.scan_snapshot
+    view = scanner_view(snapshot) if snapshot is not None else None
+    render_market_overview(view)
+
+    if snapshot is not None and universe is not None:
+        if snapshot.universe_id != universe.universe_id:
+            st.warning(
+                f"Showing results for {snapshot.universe_display_name}. Press "
+                f"Scan Market to scan {universe.display_name}."
+            )
+        elif snapshot.universe_fingerprint != universe.fingerprint:
+            st.warning(
+                "The configuration for this universe has changed since this scan."
+            )
+
+    if view is not None and view.has_rows:
+        symbols = list(view.eligible_symbols)
+        # A selection that survived the new scan is kept; a stale one is reset.
+        previous = state.get("scan_symbol_select")
+        index = symbols.index(previous) if previous in symbols else 0
+        chosen = st.selectbox(
+            "Open a research candidate", symbols, index=index,
+            key="scan_symbol_select",
+            help="Assessable results only. Symbols with no data are not listed.",
+        )
+        if st.button("Open selected in Research", key="open_in_research_button"):
+            open_in_research(chosen)
+        if state.get("symbol_input"):
+            st.caption(
+                f"Research symbol set to {state['symbol_input']}. Open the "
+                "Research tab and press Refresh."
+            )
 
 
 def refresh_feeds() -> None:
@@ -432,12 +645,18 @@ def main() -> None:
         "positions — no broker, no orders, no real money."
     )
 
+    # Before render_controls builds symbol_input: a handoff parked on the
+    # previous run is applied here, or Streamlit refuses the assignment.
+    apply_pending_research_symbol()
+
     render_controls()
     render_failure()
 
-    research_tab, news_tab, feeds_tab, paper_tab = st.tabs(
-        ["Research", "News", "External feeds", "Paper portfolio"]
+    market_tab, research_tab, news_tab, feeds_tab, paper_tab = st.tabs(
+        ["Market Overview", "Research", "News", "External feeds", "Paper portfolio"]
     )
+    with market_tab:
+        render_market_panel()
     with research_tab:
         render_research()
     with news_tab:

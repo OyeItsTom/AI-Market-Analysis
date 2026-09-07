@@ -881,6 +881,269 @@ def _feeds_unconfigured() -> str:
     return UNCONFIGURED_MESSAGE
 
 
+# -- market scanner (Phase 10) -------------------------------------------
+
+SCANNER_DISCLAIMER = (
+    "Research candidates only — symbols are ordered by the structure of the "
+    "evidence, not by investment merit. Nothing here is a recommendation, a "
+    "score or a prediction, and nothing here reaches paper trading."
+)
+
+SCANNER_EMPTY_HELP = (
+    "The scanner is manual: nothing is fetched until you press Scan Market. It "
+    "scans daily bars over the universe you select."
+)
+
+SCANNER_INTERVAL_NOTE = (
+    "Market scans use daily bars. Weekly and monthly remain available in "
+    "single-symbol Research."
+)
+
+SCANNER_ORDERING_NOTE = (
+    "Ordered by evidence structure, then by how many hypotheses classified, then "
+    "by data freshness. Position means how much there is to inspect — not that "
+    "one symbol is a better investment than another."
+)
+
+#: One approved phrase per structural category. The vocabulary lives here so no
+#: renderer can invent a more flattering word for a weaker finding.
+_CATEGORY_LABEL = {
+    "unanimous_directional": "Unanimous directional",
+    "directional_with_neutral": "Directional with neutral",
+    "conflicted": "Conflicted",
+    "neutral": "Neutral",
+    "not_assessable": "Not assessable",
+}
+
+#: Assessment states are research classifications. There is deliberately no
+#: mapping to Buy or Sell: the moment "bullish" becomes "buy", a classification
+#: has been turned into advice the system never made.
+_ASSESSMENT_LABEL = {
+    "bullish": "Bullish",
+    "bearish": "Bearish",
+    "conflicted": "Conflicted",
+    "neutral": "Neutral",
+    "insufficient_data": "Insufficient data",
+}
+
+#: Deterministic, generated from category identity -- never freeform prose and
+#: never model-written. Each states a fact about how the hypotheses stood.
+_WHY_SURFACED = {
+    "unanimous_directional": "All classified hypotheses agree directionally",
+    "directional_with_neutral": "Directional evidence alongside neutral observations",
+    "conflicted": "Hypotheses conflict on direction",
+    "neutral": "All classified hypotheses agree there is no direction",
+    "not_assessable": "No assessment was produced",
+}
+
+_ELIGIBILITY_LABEL = {
+    "no_data": "No data",
+    "insufficient_evidence": "Insufficient evidence",
+}
+
+#: Operational failures, worded as what went wrong technically. Kept separate
+#: from the research states above because "the provider was down" and "this
+#: symbol had little to say" are different facts about different things.
+_ERROR_LABEL = {
+    "provider_unavailable": "Provider unavailable",
+    "data_quality": "Data quality issue",
+    "symbol_mismatch": "Symbol mismatch",
+    "request_invalid": "Request invalid",
+    "unexpected": "Unexpected scanner error",
+}
+
+_NO_DATA_DETAIL = "The provider returned no usable bars for this symbol."
+_INSUFFICIENT_DETAIL = (
+    "Too few hypotheses classified for a finding; the history is there but the "
+    "ensemble is still warming up."
+)
+
+
+@dataclass(frozen=True)
+class ScannerRowView:
+    """One assessable symbol, formatted. Carries no judgement of any kind."""
+
+    symbol: str
+    category: str
+    category_label: str
+    assessment: str
+    bullish: int
+    bearish: int
+    neutral: int
+    why_surfaced: str
+    latest_bar: str
+    data_cutoff: str
+
+
+@dataclass(frozen=True)
+class ScannerIssueRowView:
+    """One symbol with nothing to assess, or one that failed operationally.
+
+    ``is_operational_failure`` is the field that keeps the two apart. A provider
+    outage and a symbol the provider simply had no bars for are different facts,
+    and a panel that called both "failed" would misreport the healthy case.
+    """
+
+    symbol: str
+    status: str
+    detail: str
+    is_operational_failure: bool
+    latest_bar: str
+    data_cutoff: str
+
+
+@dataclass(frozen=True)
+class ScannerSummaryView:
+    """Headline facts about one completed scan."""
+
+    universe_id: str
+    universe_display_name: str
+    universe_as_of: str
+    fingerprint_prefix: str
+    interval: str
+    symbols_total: int
+    symbols_completed: int
+    symbols_eligible: int
+    symbols_no_data: int
+    symbols_insufficient_evidence: int
+    operational_failures: int
+    status: str
+    duration_seconds: float
+    scan_started_at: str
+    scan_completed_at: str
+    policy_fingerprint_prefix: str
+
+
+@dataclass(frozen=True)
+class ScannerView:
+    """One completed scan, ready to render."""
+
+    summary: ScannerSummaryView
+    rows: tuple[ScannerRowView, ...]
+    issues: tuple[ScannerIssueRowView, ...]
+    disclaimer: str = SCANNER_DISCLAIMER
+    ordering_note: str = SCANNER_ORDERING_NOTE
+
+    @property
+    def has_rows(self) -> bool:
+        return bool(self.rows)
+
+    @property
+    def eligible_symbols(self) -> tuple[str, ...]:
+        """Symbols a user may open in Research -- assessable ones only."""
+        return tuple(row.symbol for row in self.rows)
+
+    @property
+    def status_note(self) -> str:
+        if self.summary.operational_failures == 0:
+            return "Every symbol was scanned without an operational error."
+        if self.summary.operational_failures == self.summary.symbols_completed:
+            return (
+                "No symbol could be scanned. Nothing below reflects current "
+                "market data."
+            )
+        return (
+            f"{self.summary.operational_failures} of "
+            f"{self.summary.symbols_completed} symbols could not be scanned. "
+            "The rest completed normally."
+        )
+
+
+def scanner_view(snapshot) -> ScannerView:
+    """Format a MarketScanSnapshot. Ordering comes from the scanner, not here.
+
+    The assessable rows are taken from the locked ranking helper rather than
+    re-sorted: chronology and evidence structure belong to the application
+    layer, and re-ordering in the view would be a second, disagreeing
+    implementation of the ranking rules.
+    """
+    from src.application.scanner import ranked_rows
+
+    rows = tuple(_row_view(result) for result in ranked_rows(snapshot))
+    issues = tuple(
+        _issue_view(result)
+        for result in snapshot.results
+        if result.eligibility is None or not result.is_eligible
+    )
+    return ScannerView(summary=_summary_view(snapshot), rows=rows, issues=issues)
+
+
+def _summary_view(snapshot) -> ScannerSummaryView:
+    counters = snapshot.counters
+    return ScannerSummaryView(
+        universe_id=snapshot.universe_id,
+        universe_display_name=snapshot.universe_display_name,
+        universe_as_of=snapshot.universe_as_of.isoformat(),
+        # A prefix for humans; the snapshot keeps the full digest.
+        fingerprint_prefix=snapshot.universe_fingerprint[:12],
+        interval=snapshot.interval.value,
+        symbols_total=counters.symbols_total,
+        symbols_completed=counters.symbols_completed,
+        symbols_eligible=counters.symbols_eligible,
+        symbols_no_data=counters.symbols_no_data,
+        symbols_insufficient_evidence=counters.symbols_insufficient_evidence,
+        operational_failures=counters.symbols_failed,
+        status=snapshot.status.value.replace("_", " ").upper(),
+        duration_seconds=round(snapshot.duration_seconds, 2),
+        scan_started_at=_stamp(snapshot.scan_started_at),
+        scan_completed_at=_stamp(snapshot.scan_completed_at),
+        policy_fingerprint_prefix=snapshot.policy_fingerprint[:12],
+    )
+
+
+def _row_view(result) -> ScannerRowView:
+    counts = result.counts
+    category = result.category.value
+    return ScannerRowView(
+        symbol=result.symbol,
+        category=category,
+        category_label=_CATEGORY_LABEL[category],
+        assessment=_ASSESSMENT_LABEL[result.state.value],
+        bullish=counts.bullish,
+        bearish=counts.bearish,
+        neutral=counts.neutral,
+        why_surfaced=_WHY_SURFACED[category],
+        latest_bar=_stamp(result.latest_bar_open),
+        data_cutoff=_stamp(result.data_cutoff),
+    )
+
+
+def _issue_view(result) -> ScannerIssueRowView:
+    if result.is_operational_failure:
+        status = _ERROR_LABEL[result.error_code.value]
+        detail = result.error_detail or "No further detail was reported."
+    else:
+        status = _ELIGIBILITY_LABEL[result.eligibility.value]
+        detail = (
+            _NO_DATA_DETAIL
+            if result.eligibility.value == "no_data"
+            else _INSUFFICIENT_DETAIL
+        )
+    return ScannerIssueRowView(
+        symbol=result.symbol,
+        status=status,
+        detail=detail,
+        is_operational_failure=result.is_operational_failure,
+        latest_bar=_stamp(result.latest_bar_open),
+        data_cutoff=_stamp(result.data_cutoff),
+    )
+
+
+def universe_option_label(definition) -> str:
+    """Selector label: name, size and vintage -- never the raw fingerprint.
+
+    ``as_of`` is shown because a membership list captured on one date and
+    scanned across years of history is survivorship-biased, and hiding the
+    vintage would hide that.
+    """
+    symbols = definition.symbol_count
+    plural = "symbol" if symbols == 1 else "symbols"
+    return (
+        f"{definition.display_name} — {symbols} {plural}, "
+        f"as of {definition.as_of.isoformat()}"
+    )
+
+
 __all__ = [
     "MarketView",
     "market_view",
@@ -935,4 +1198,14 @@ __all__ = [
     "LABEL_FEED_OBSERVED",
     "TOOLTIP_FEED_UPDATED",
     "TOOLTIP_FEED_TRUST",
+    "ScannerRowView",
+    "ScannerIssueRowView",
+    "ScannerSummaryView",
+    "ScannerView",
+    "scanner_view",
+    "universe_option_label",
+    "SCANNER_DISCLAIMER",
+    "SCANNER_EMPTY_HELP",
+    "SCANNER_INTERVAL_NOTE",
+    "SCANNER_ORDERING_NOTE",
 ]

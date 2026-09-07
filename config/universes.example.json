@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "EXAMPLE universe configuration. This file is a template and is NEVER",
+    "loaded automatically. Copy it to config/universes.local.json (gitignored)",
+    "and edit that copy; until you do, the scanner has no configured universe.",
+    "",
+    "as_of records when the membership list was captured. A list captured today",
+    "and scanned across years of history is survivorship-biased: companies that",
+    "left the list are absent. The scanner shows as_of beside the name so that",
+    "limitation stays visible.",
+    "",
+    "source_kind is your own attribution, not a verification. This system cannot",
+    "check index membership, so there is no source_kind claiming it does.",
+    "",
+    "At most 50 universes, at most 100 symbols each. 100 is a hard safety",
+    "ceiling, NOT a performance recommendation: only small universes have been",
+    "measured, so start small and increase deliberately."
+  ],
+  "schema_version": 1,
+  "universes": [
+    {
+      "universe_id": "example-watchlist",
+      "display_name": "Example research watchlist",
+      "source_kind": "local_static",
+      "source_reference": "Illustrative research-demo membership: ten widely traded US symbols chosen to demonstrate the scanner. Not an index, and not guaranteed to be current or complete.",
+      "as_of": "2026-09-06",
+      "symbols": [
+        "AAPL", "AMZN", "GOOGL", "JNJ", "JPM",
+        "KO", "MSFT", "PG", "WMT", "XOM"
+      ],
+      "enabled": true
+    }
+  ]
+}
