@@ -311,12 +311,18 @@ def test_the_research_panel_offers_no_paper_action_control():
     # reload_universes_button and scan_market_button are the Phase 10 pair on
     # Market Overview. Neither can open or close a position: one re-reads the
     # local universe configuration, the other runs a read-only market scan.
+    # explain_with_ai_button is the Phase 11A control on the Research tab. It
+    # is explanatory only: pressing it asks a configured AI provider to explain
+    # the research evidence already on screen. It cannot open or close a
+    # position, alter paper state, or condition any paper action, and it never
+    # fires on its own -- tests/test_dashboard_reasoning.py holds it to that.
     # All are named individually rather than matched by prefix: the point of
     # this assertion is that every control is accounted for, so a future button
     # must be argued for here rather than admitted by a pattern.
     assert keys <= {
         "refresh_button", "refresh_news_button", "refresh_feeds_button",
         "reload_universes_button", "scan_market_button",
+        "explain_with_ai_button",
         OPEN_SUBMIT, CLOSE_SUBMIT,
     }
 

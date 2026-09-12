@@ -5,6 +5,11 @@ manual paper-position panel. It adds **no research rule, no risk rule and no
 new capability**: every state, count and reason code on screen was produced by
 a domain module that existed before this phase.
 
+Later phases add panels to this interface without changing that rule. Phase
+11A adds an optional, explicitly requested **grounded AI explanation** of the
+research evidence below the assessment — see the section near the end and
+**[docs/reasoning.md](reasoning.md)**.
+
 ## Purpose
 
 Until now the only way to look at a research assessment was to write a script.
@@ -173,8 +178,10 @@ layer — and provenance is never attached to the assessment object itself.
 ## Paper positions
 
 The paper panel is separate from the research panel on purpose. The research
-panel has **no action control of any kind**, and the paper panel is never given
-an assessment to display. Nothing in the interface turns "the research says
+panel has **no paper-action control of any kind** — its only button, Phase
+11A's *Explain with AI*, asks for words about what is already on screen and can
+open or close nothing — and the paper panel is never given an assessment or an
+explanation to display. Nothing in the interface turns "the research says
 bullish" into a position; a human reads one and decides the other.
 
 Only two actions exist, both manual:
@@ -249,6 +256,41 @@ data-quality, request, domain, unexpected — so an upstream outage does not rea
 like a bug. An unexpected exception shows one safe sentence and writes the
 traceback to the terminal, never to the interface.
 
+## Grounded AI explanation (Phase 11A)
+
+Below the assessment, the Research tab has one further control: **Explain with
+AI**. Pressing it sends a bounded view of the evidence on screen — symbol,
+interval, assessment state and counts, each hypothesis's classification, reason
+codes, latest bar time and recorded evidence values — to an external AI
+provider, and shows the answer only after the reasoning layer has validated it
+against that evidence. Raw market history, news, feeds, scanner results and
+paper positions are not sent, and a privacy note beside the button says so.
+
+The explanation is *of* the deterministic assessment and adds no assessment of
+its own. It is asked for, never assumed: nothing is explained on load, on a
+rerun, on a widget change or on a Refresh, and one click asks at most once.
+
+It is optional. The feature is composed from `ANTHROPIC_API_KEY` and
+`ANTHROPIC_MODEL` inside the application layer
+(`src/application/reasoning_composition.py`); with either unset the button is
+disabled, a status line names the variable, and nothing else on the dashboard
+changes. No dashboard module imports the vendor SDK or reads either variable.
+The credential is read once, inside the composition module, and handed to the
+vendor client; it is never rendered, never named in a message, and never
+placed in a reasoning result or failure. The model id is shown, as the
+provider reported it, in the Diagnostics expander of a trusted explanation.
+Session state keeps the composed service (which holds the vendor client, as a
+client must), one trusted explanation and one safe failure description — and
+never a raw provider response or an exception. A successful Refresh discards
+the explanation and the failure, and an explanation is rendered only while it
+matches the snapshot on screen by symbol and data cutoff.
+
+A provider failure, a rejected answer and a snapshot with nothing to explain
+are rendered as three different things. A rejected answer is shown as its
+rejection — no partial text is salvaged — and there is no retry, fallback or
+cache. Full detail: **[docs/reasoning.md](reasoning.md)** and
+**[ADR 0009](adr/0009-grounded-reasoning.md)**.
+
 ## Phase 7 non-goals
 
 Not built, deliberately:
@@ -258,7 +300,10 @@ Not built, deliberately:
 - no policy, limit or ensemble editing from the interface
 - no persistence of any kind, no database, no journal
 - no scheduler, no background refresh, no continuous monitoring
-- no broker, trading API, order, execution, credential or API key
-- no LLM, no generated explanation, no news ingestion, no notifications
+- no broker, trading API, order, execution, or broker credential
+- no LLM and no generated explanation *in Phase 7 itself*; Phase 11A adds an
+  optional grounded AI explanation, composed from an API key that the
+  application layer reads and no dashboard module reads (see above)
+- no news ingestion, no notifications
 - no authentication, no hosting, no non-loopback binding
 - no confidence, probability, score or recommendation

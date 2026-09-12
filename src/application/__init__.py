@@ -15,6 +15,17 @@ there is no code path from ``BULLISH`` to ``OPEN_LONG``.
 """
 
 from .errors import ApplicationError, FailureKind, FailureReport, classify
+from .reasoning import (
+    ReasoningAvailability,
+    ReasoningService,
+    ReasoningUnavailable,
+)
+from .reasoning_composition import (
+    ANTHROPIC_API_KEY_VAR,
+    ANTHROPIC_MODEL_VAR,
+    build_reasoning_service,
+    describe_reasoning_configuration,
+)
 from .paper import (
     DEFAULT_RISK_POLICY,
     PaperSession,
@@ -42,6 +53,13 @@ from .snapshot import (
 
 __all__ = [
     "ApplicationError",
+    "ReasoningAvailability",
+    "ReasoningService",
+    "ReasoningUnavailable",
+    "ANTHROPIC_API_KEY_VAR",
+    "ANTHROPIC_MODEL_VAR",
+    "build_reasoning_service",
+    "describe_reasoning_configuration",
     "FailureKind",
     "FailureReport",
     "classify",

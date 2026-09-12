@@ -293,12 +293,65 @@ def test_no_news_module_reaches_the_market_data_store():
         assert "CsvBarStore" not in code_identifiers(path)
 
 
+#: Phase 8's own merge and its first parent. The assertion below is about what
+#: Phase 8 did, and Phase 8 is finished -- so the range is pinned to the two
+#: commits that bound it rather than to ``main``, which keeps moving.
+PHASE_EIGHT_PARENT = "2a393e7f940323e2a48bf250337a62373540c65b"
+PHASE_EIGHT_MERGE = "21bae48dc1e3b31b208b76103f5193265e1dc43f"
+
+#: A commit that genuinely did change ``requirements.txt``, used below as a
+#: control so the pinned comparison cannot pass by looking at nothing.
+REQUIREMENTS_WERE_CHANGED = "fbb8c5cc63a22683ea8389982622db0d70d44dd1"
+
+
 def test_requirements_were_not_changed_for_phase_eight():
-    """Phase 8 adds no dependency: stdlib only."""
+    """Phase 8 adds no dependency: stdlib only.
+
+    Compared against Phase 8's own merge range, not against ``main``. The
+    original form asked "does requirements.txt differ from main today?", which
+    answered the intended question only while ``main`` happened to sit where
+    Phase 8 left it: the first later phase to add any dependency would have
+    failed this test, and the failure would have pointed at Phase 8, which had
+    nothing to do with it.
+
+    Pinning the range keeps the claim true forever and keeps it narrow -- this
+    says nothing about what any later phase may add, which is not this test's
+    business.
+    """
     import subprocess
 
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", "main", "--", "requirements.txt"],
+    # The range must be Phase 8's actual parentage. Two SHAs that merely look
+    # plausible -- or the same SHA twice -- would make every comparison below
+    # empty and every assertion true for the wrong reason.
+    parentage = subprocess.run(
+        ["git", "rev-parse", f"{PHASE_EIGHT_MERGE}^1"],
         cwd=REPO, capture_output=True, text=True,
-    ).stdout.strip()
-    assert changed == "", "requirements.txt must not change in Phase 8"
+    )
+    assert parentage.stdout.strip() == PHASE_EIGHT_PARENT, (
+        "the pinned range is not Phase 8's merge and its first parent"
+    )
+
+    result = subprocess.run(
+        ["git", "diff", "--name-only", PHASE_EIGHT_PARENT, PHASE_EIGHT_MERGE,
+         "--", "requirements.txt"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        "Phase 8's commits are unreachable, so this assertion proved nothing: "
+        f"{result.stderr.strip()}"
+    )
+    assert result.stdout.strip() == "", "requirements.txt must not change in Phase 8"
+
+    # A pinned range can go quietly vacuous -- two identical SHAs, or a typo
+    # that happens to resolve, would make the assertion above pass without
+    # examining anything. This proves the comparison can still see a change by
+    # running it over a commit that did modify the file.
+    control = subprocess.run(
+        ["git", "diff", "--name-only", f"{REQUIREMENTS_WERE_CHANGED}^1",
+         REQUIREMENTS_WERE_CHANGED, "--", "requirements.txt"],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert control.returncode == 0 and control.stdout.strip() == "requirements.txt", (
+        "the control commit no longer shows a requirements change, so the "
+        "assertion above proves nothing"
+    )

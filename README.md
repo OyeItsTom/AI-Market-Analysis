@@ -19,6 +19,8 @@ An educational, evidence-driven quantitative market-research and
 **Phase 8 — News and company announcements: implemented.**
 **Phase 9 — External RSS/Atom feeds: implemented.**
 **Phase 10 — Market universe + multi-stock scanner: implemented.**
+**Phase 11A — Grounded AI explanation of research evidence: implemented
+(optional).**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -36,8 +38,9 @@ create one — the two are separated by construction, not by convention.
 Phase 7 adds a **localhost-only** Streamlit interface for reading the existing
 pipeline, plus a manual paper panel. It introduces no research rule and no new
 capability: every state and count on screen was produced by a Phase 1-6 module.
-The research panel has no action control and the paper panel is never shown an
-assessment, so nothing in the interface turns a classification into a position.
+The research panel has no paper-action control and the paper panel is never
+shown an assessment, so nothing in the interface turns a classification into a
+position.
 Paper state is session-only and is never written to disk.
 
 ```
@@ -77,6 +80,22 @@ symbol is a better investment. Scans are daily-only, serial and manual;
 selecting a result only sets the Research symbol and fetches nothing. News and
 feeds reach neither the ordering nor the results, and the panel exposes no paper
 action. Zero new dependencies. See **[docs/scanner.md](docs/scanner.md)**.
+
+Phase 11A adds an **optional grounded AI explanation** of the research evidence
+already on screen. Below the assessment, an *Explain with AI* button sends a
+bounded view of that evidence — symbol, interval, assessment state and counts,
+each hypothesis's classification, reason codes, latest bar time and recorded
+evidence values — to an external AI provider, and shows the answer only after
+it has been validated against the evidence it was given: every statement must
+cite evidence that exists, trading vocabulary is refused, and a rejected answer
+is shown as its rejection rather than in part. The deterministic research
+owns the assessment; the model only puts it into words, and it can neither
+predict, recommend, nor reach a paper action. It is off unless both
+`ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` are set (see `.env.example`; there is
+no default model), and with them unset the dashboard is unchanged. Nothing is
+explained automatically, one click asks at most once, and raw market history,
+news, feeds, scanner results and paper positions are never sent. See
+**[docs/reasoning.md](docs/reasoning.md)**.
 
 ## Target architecture
 
@@ -147,6 +166,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/news.md](docs/news.md)** (Phase 8),
 **[docs/feeds.md](docs/feeds.md)** (Phase 9),
 **[docs/scanner.md](docs/scanner.md)** (Phase 10),
+**[docs/reasoning.md](docs/reasoning.md)** (Phase 11A),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -156,7 +176,8 @@ assessment), **[ADR 0005](docs/adr/0005-local-dashboard.md)** (local
 dashboard), **[ADR 0006](docs/adr/0006-news-and-announcements.md)** (news and
 announcements), **[ADR 0007](docs/adr/0007-external-feeds.md)** (external
 feeds), **[ADR 0008](docs/adr/0008-market-scanner.md)** (market universe and
-scanner).
+scanner), **[ADR 0009](docs/adr/0009-grounded-reasoning.md)** (grounded AI
+explanation).
 
 ### The core idea
 
@@ -216,6 +237,12 @@ from `config/universes.example.json`). The example is a template and is never
 loaded automatically: with no local file the scanner has no universe and scans
 nothing.
 
+The Phase 11A AI explanation needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`,
+both required together and both optional for everything else. With either missing, blank or malformed the
+feature is simply off. The key is read only inside
+`src/application/reasoning_composition.py`, never by a dashboard module, and
+never appears on screen or in session state.
+
 Downloaded market data lives in `data/raw/` and `data/processed/`, both
 git-ignored — datasets are never committed.
 
@@ -235,9 +262,15 @@ pull requests.
 ## Not implemented (by design, for later phases)
 
 Economic simulation (trades, fills, costs, slippage, cash balances, equity
-curves, drawdown, Sharpe), buy/sell recommendations, ML/AI prediction, LLM or
-news analysis, portfolio optimization, automated position sizing, and any form
-of broker order execution — including live-money trading.
+curves, drawdown, Sharpe), buy/sell recommendations, ML prediction, AI
+prediction, target prices, automated trading decisions, LLM analysis of news or
+feeds, portfolio optimization, automated position sizing, and any form of
+broker order execution — including live-money trading.
+
+What **is** implemented on the AI side is narrower than any of those: Phase 11A's
+optional, grounded LLM explanation of deterministic research evidence. It
+explains an assessment the pipeline already made; it does not make one,
+forecast anything, or recommend anything. This is not an AI trading bot.
 
 Phase 7's dashboard displays this pipeline; it does not extend it. It has no
 scheduler, no background refresh, no persistence, no authentication and no

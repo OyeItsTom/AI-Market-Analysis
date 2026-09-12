@@ -33,6 +33,13 @@ from src.features.base import FeatureSeries
 from src.portfolio import PaperPosition, RiskDecision, RiskPolicy
 from src.strategies.research import ResearchObservation, ResearchState
 
+from .reasoning import (
+    ReasoningFailureCode,
+    ReasoningProviderError,
+    ReasoningSnapshot,
+    ReasoningUnavailable,
+    ReasoningValidationError,
+)
 from .snapshot import ResearchSnapshot
 
 # -- vocabulary ---------------------------------------------------------
@@ -1144,6 +1151,271 @@ def universe_option_label(definition) -> str:
     )
 
 
+# -- grounded AI explanation (Phase 11A) ---------------------------------
+#
+# The dashboard renders a trusted ReasoningSnapshot and a safe account of why
+# one could not be produced. Both arrive here already decided: the snapshot was
+# validated by the reasoning domain and the failure was classified by the
+# layer that observed it. Nothing below inspects a research assessment, reads
+# configuration, or holds an exception -- it formats, and it formats only
+# values that are safe to put in front of a person.
+
+#: The section heading. Deliberately "explanation of evidence", never
+#: "recommendation", "prediction" or "signal": the output describes the
+#: deterministic research the user is already looking at and adds no view.
+REASONING_HEADING = "AI explanation of research evidence"
+
+#: Shown with every trusted explanation.
+REASONING_DISCLAIMER = (
+    "An AI explanation of the deterministic research evidence above, in words. "
+    "It was checked against the evidence it was given before being shown, but "
+    "it is not a trading recommendation and adds no assessment of its own."
+)
+
+#: Shown next to the action, every time. States exactly what leaves this
+#: machine and what does not. It must never claim that nothing leaves: pressing
+#: the button sends evidence to an external service, and saying otherwise
+#: would be the one sentence on this dashboard that is false.
+REASONING_PRIVACY_NOTE = (
+    "Pressing Explain with AI sends a bounded view of the current research "
+    "evidence -- the symbol and interval, the assessment state and counts, "
+    "and each hypothesis's classification, reason codes, latest bar time and "
+    "recorded evidence values -- to an external AI provider, which processes "
+    "it outside this machine. The deterministic research assessment above is "
+    "generated locally and does not depend on it. Raw market history, news, "
+    "external feeds, scanner results and paper positions are not sent."
+)
+
+#: The local reason nothing can be explained. Not a failure of any kind:
+#: no provider was asked, because there is no assessment to ground an answer in.
+REASONING_NO_ASSESSMENT = (
+    "There is no assessment to explain. An explanation has to be grounded in a "
+    "research assessment, and this snapshot has none -- there are no bars to "
+    "assess. Refresh a symbol that returns data first."
+)
+
+
+@dataclass(frozen=True)
+class ReasoningClaimView:
+    """One attributable statement and the compact ids it cites.
+
+    Ids are rendered as they are. Reconstructing what each one refers to would
+    mean re-deriving evidence identity in the presentation layer, which is the
+    reasoning domain's job and already done once.
+    """
+
+    text: str
+    evidence_ids: tuple[str, ...]
+
+    @property
+    def citation(self) -> str:
+        return "Evidence: " + ", ".join(self.evidence_ids)
+
+
+@dataclass(frozen=True)
+class ReasoningExplanationView:
+    """A trusted explanation, formatted. Carries nothing the model produced
+    beyond what the validator accepted, and nothing about how it was asked.
+
+    ``diagnostics`` are label/value pairs about the call -- provider, model,
+    tokens, latency, attempts, the two fingerprints -- and never the prompt,
+    the packet, the credential or a cost.
+    """
+
+    symbol: str
+    data_cutoff: str
+    generated_at: str
+    summary: str
+    summary_evidence_ids: tuple[str, ...]
+    claims: tuple[ReasoningClaimView, ...]
+    uncertainties: tuple[str, ...]
+    diagnostics: tuple[tuple[str, str], ...]
+    heading: str = REASONING_HEADING
+    disclaimer: str = REASONING_DISCLAIMER
+
+    @property
+    def summary_citation(self) -> str:
+        return "Evidence: " + ", ".join(self.summary_evidence_ids)
+
+
+def reasoning_explanation_view(reasoning: ReasoningSnapshot) -> ReasoningExplanationView:
+    """Format a trusted snapshot. Every value is read off the record."""
+    usage = reasoning.usage
+    return ReasoningExplanationView(
+        symbol=reasoning.symbol,
+        data_cutoff=_stamp(reasoning.data_cutoff),
+        generated_at=_stamp(reasoning.generated_at),
+        summary=reasoning.summary.text,
+        summary_evidence_ids=tuple(reasoning.summary.evidence_ids),
+        claims=tuple(
+            ReasoningClaimView(text=claim.text, evidence_ids=tuple(claim.evidence_ids))
+            for claim in reasoning.claims
+        ),
+        uncertainties=tuple(reasoning.uncertainties),
+        diagnostics=(
+            ("Provider", usage.provider),
+            ("Model (as reported by the provider)", usage.model),
+            ("Input tokens", f"{usage.input_tokens:,}"),
+            ("Output tokens", f"{usage.output_tokens:,}"),
+            ("Latency", f"{usage.latency_ms:,} ms"),
+            ("Attempts", str(usage.attempt_count)),
+            ("Evidence fingerprint", reasoning.evidence_fingerprint),
+            ("Reasoning fingerprint", reasoning.reasoning_fingerprint),
+            ("Prompt", f"{reasoning.prompt_id} v{reasoning.prompt_version}"),
+            ("Output schema", f"v{reasoning.output_schema_version}"),
+        ),
+    )
+
+
+def explanation_is_current(
+    reasoning: ReasoningSnapshot, snapshot: ResearchSnapshot
+) -> bool:
+    """Whether a retained explanation is about the research on screen.
+
+    Two identity facts, both carried by the trusted record: the symbol, and the
+    data cutoff, which the evidence builder sets to the research snapshot's
+    ``built_at``. Anything else -- rebuilding the packet, recomputing the
+    evidence fingerprint -- would be a second construction path for a value
+    that already has an owner.
+    """
+    return (
+        reasoning.symbol == snapshot.symbol
+        and reasoning.data_cutoff == snapshot.built_at
+    )
+
+
+#: Categories a failure view can carry. Three, because they call for three
+#: different remedies: wait or reconfigure, distrust the answer, or refresh
+#: research that can be assessed.
+FAILURE_PROVIDER = "provider"
+FAILURE_VALIDATION = "validation"
+FAILURE_UNAVAILABLE = "unavailable"
+
+#: What went wrong on the way to an answer. Keyed by code; the value is the
+#: whole sentence, and the sentence never contains the error's ``detail``.
+_PROVIDER_FAILURE_TEXT: dict[ReasoningFailureCode, str] = {
+    ReasoningFailureCode.AUTHENTICATION_FAILED: (
+        "The AI provider rejected the configured credential. Check the API key "
+        "in your local configuration, then restart the dashboard."
+    ),
+    ReasoningFailureCode.RATE_LIMITED: (
+        "The AI provider asked for a slower request rate. Wait a moment before "
+        "pressing Explain with AI again."
+    ),
+    ReasoningFailureCode.PROVIDER_UNAVAILABLE: (
+        "The AI provider could not be reached: it was unavailable, the request "
+        "timed out, or there was a network problem."
+    ),
+    ReasoningFailureCode.REQUEST_INVALID: (
+        "The AI provider rejected the request. This usually means the configured "
+        "model or request settings are not accepted by the provider."
+    ),
+    ReasoningFailureCode.UNEXPECTED: (
+        "The call to the AI provider failed unexpectedly."
+    ),
+}
+
+#: An answer arrived and was refused. The framing is the point: the provider
+#: did respond, and this dashboard declined to show what it said.
+_VALIDATION_FAILURE_TEXT: dict[ReasoningFailureCode, str] = {
+    ReasoningFailureCode.OUTPUT_SCHEMA_FAILED: (
+        "The AI provider returned an answer, but it did not satisfy the required "
+        "structure, so this dashboard refused to display it."
+    ),
+    ReasoningFailureCode.GROUNDING_FAILED: (
+        "The AI provider returned an answer, but it referred to evidence it was "
+        "not given, so this dashboard refused to display it."
+    ),
+    ReasoningFailureCode.BOUNDARY_VIOLATION: (
+        "The AI provider returned an answer, but it went beyond the allowed "
+        "explanation boundary, so this dashboard refused to display it."
+    ),
+}
+
+_PROVIDER_FAILURE_FALLBACK = "The call to the AI provider did not produce an answer."
+_VALIDATION_FAILURE_FALLBACK = (
+    "The AI provider returned an answer, but it could not be trusted, so this "
+    "dashboard refused to display it."
+)
+
+PROVIDER_FAILURE_GUIDANCE = (
+    "No answer was received. Nothing about the research above has changed."
+)
+VALIDATION_FAILURE_GUIDANCE = (
+    "Nothing from the rejected answer is shown, in whole or in part. The "
+    "deterministic research above is unaffected."
+)
+UNAVAILABLE_GUIDANCE = "No provider was contacted."
+
+
+@dataclass(frozen=True)
+class ReasoningFailureView:
+    """A safe, complete account of why there is no explanation to show.
+
+    Holds a category, a code label and two sentences -- and not the exception
+    that produced them. An error object carries a ``detail`` this layer cannot
+    vouch for, and retaining it in session state would be keeping the one value
+    the mapping exists to leave behind.
+    """
+
+    kind: str
+    code: str
+    message: str
+    guidance: str
+
+    @property
+    def is_provider_failure(self) -> bool:
+        return self.kind == FAILURE_PROVIDER
+
+    @property
+    def is_validation_failure(self) -> bool:
+        return self.kind == FAILURE_VALIDATION
+
+    @property
+    def is_unavailable(self) -> bool:
+        return self.kind == FAILURE_UNAVAILABLE
+
+
+def reasoning_failure_view(error: Exception) -> ReasoningFailureView:
+    """Map a known reasoning failure to words. Known types only.
+
+    The message is chosen by code from a fixed table; ``error.detail`` is never
+    read. The layer below bounds a detail's length and documents what it may
+    contain, but it also says plainly that bounding is not redaction -- so the
+    only text that reaches a screen is text written here.
+
+    Anything that is not one of the three application-facing failure types is
+    refused with a ``TypeError``: a programming error must stay one, not be
+    presented as an outage.
+    """
+    if isinstance(error, ReasoningProviderError):
+        return ReasoningFailureView(
+            kind=FAILURE_PROVIDER,
+            code=error.code.value,
+            message=_PROVIDER_FAILURE_TEXT.get(error.code, _PROVIDER_FAILURE_FALLBACK),
+            guidance=PROVIDER_FAILURE_GUIDANCE,
+        )
+    if isinstance(error, ReasoningValidationError):
+        return ReasoningFailureView(
+            kind=FAILURE_VALIDATION,
+            code=error.code.value,
+            message=_VALIDATION_FAILURE_TEXT.get(
+                error.code, _VALIDATION_FAILURE_FALLBACK
+            ),
+            guidance=VALIDATION_FAILURE_GUIDANCE,
+        )
+    if isinstance(error, ReasoningUnavailable):
+        return ReasoningFailureView(
+            kind=FAILURE_UNAVAILABLE,
+            code="",
+            message=REASONING_NO_ASSESSMENT,
+            guidance=UNAVAILABLE_GUIDANCE,
+        )
+    raise TypeError(
+        f"{type(error).__name__} is not a reasoning failure this view can describe"
+    )
+
+
 __all__ = [
     "MarketView",
     "market_view",
@@ -1208,4 +1480,20 @@ __all__ = [
     "SCANNER_EMPTY_HELP",
     "SCANNER_INTERVAL_NOTE",
     "SCANNER_ORDERING_NOTE",
+    "ReasoningClaimView",
+    "ReasoningExplanationView",
+    "reasoning_explanation_view",
+    "explanation_is_current",
+    "ReasoningFailureView",
+    "reasoning_failure_view",
+    "REASONING_HEADING",
+    "REASONING_DISCLAIMER",
+    "REASONING_PRIVACY_NOTE",
+    "REASONING_NO_ASSESSMENT",
+    "FAILURE_PROVIDER",
+    "FAILURE_VALIDATION",
+    "FAILURE_UNAVAILABLE",
+    "PROVIDER_FAILURE_GUIDANCE",
+    "VALIDATION_FAILURE_GUIDANCE",
+    "UNAVAILABLE_GUIDANCE",
 ]

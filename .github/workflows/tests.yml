@@ -18,6 +18,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # Full history. tests/test_news_boundaries.py pins the Phase 8
+          # merge and resolves its first parent; the default depth-1
+          # checkout has no ancestry and that lookup fails.
+          fetch-depth: 0
 
       # 3.11 only. The project is developed and verified on 3.11 and nothing
       # here has been tested on another version; claiming a support matrix we
