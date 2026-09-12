@@ -506,6 +506,7 @@ PHASE_7_SOURCES = (
     "src/dashboard/app.py",
     "src/dashboard/research_view.py",
     "src/dashboard/paper_view.py",
+    "src/dashboard/reasoning_view.py",
     "docs/dashboard.md",
     "docs/adr/0005-local-dashboard.md",
 )
@@ -672,3 +673,394 @@ def test_provenance_choices_offer_each_observation():
 def test_provenance_wording_disclaims_verification():
     assert "does not verify" in PROVENANCE_LABEL.lower()
     assert "authorise" in PROVENANCE_HELP.lower() or "authorize" in PROVENANCE_HELP.lower()
+
+
+# -- grounded AI explanation (Phase 11A Stage F2) -------------------------
+#
+# The trusted snapshot is produced the only way production produces one: a
+# real ReasoningService, a recording provider whose payload is grounded in the
+# real packet, and the real validator. Nothing here constructs a
+# ReasoningSnapshot by hand.
+
+from src.application.reasoning import (  # noqa: E402
+    ReasoningFailureCode,
+    ReasoningProviderError,
+    ReasoningSnapshot,
+    ReasoningUnavailable,
+    ReasoningValidationError,
+)
+from src.application.view_models import (  # noqa: E402
+    FAILURE_PROVIDER,
+    FAILURE_UNAVAILABLE,
+    FAILURE_VALIDATION,
+    REASONING_DISCLAIMER,
+    REASONING_HEADING,
+    REASONING_NO_ASSESSMENT,
+    REASONING_PRIVACY_NOTE,
+    ReasoningClaimView,
+    ReasoningExplanationView,
+    ReasoningFailureView,
+    explanation_is_current,
+    reasoning_explanation_view,
+    reasoning_failure_view,
+)
+from tests.test_application_reasoning import explaining  # noqa: E402
+
+SECRET_MARKER = "SYNTHETIC-KEY-MARKER-F2-NEVER-RENDER"
+
+
+@pytest.fixture
+def research():
+    return build_snapshot(RecordingProvider(count=120), "AAPL", Interval.DAY_1, now=clock)
+
+
+@pytest.fixture
+def trusted(research) -> ReasoningSnapshot:
+    service, _ = explaining(research)
+    return service.explain(research)
+
+
+def _every_string(view) -> list[str]:
+    out: list[str] = []
+    for name in dir(view):
+        if name.startswith("_"):
+            continue
+        value = getattr(view, name)
+        if isinstance(value, str):
+            out.append(value)
+        elif isinstance(value, tuple):
+            for item in value:
+                if isinstance(item, str):
+                    out.append(item)
+                elif isinstance(item, tuple):
+                    out.extend(s for s in item if isinstance(s, str))
+                elif isinstance(item, ReasoningClaimView):
+                    out.append(item.text)
+                    out.extend(item.evidence_ids)
+                    out.append(item.citation)
+    return out
+
+
+def test_explanation_view_carries_the_trusted_summary_and_its_evidence(trusted):
+    view = reasoning_explanation_view(trusted)
+    assert isinstance(view, ReasoningExplanationView)
+    assert view.summary == trusted.summary.text
+    assert view.summary_evidence_ids == tuple(trusted.summary.evidence_ids)
+    assert view.summary_citation.startswith("Evidence: ")
+    for evidence_id in trusted.summary.evidence_ids:
+        assert evidence_id in view.summary_citation
+
+
+def test_explanation_view_carries_every_claim_with_its_citations(trusted):
+    view = reasoning_explanation_view(trusted)
+    assert len(view.claims) == len(trusted.claims)
+    for shown, claim in zip(view.claims, trusted.claims):
+        assert isinstance(shown, ReasoningClaimView)
+        assert shown.text == claim.text
+        assert shown.evidence_ids == tuple(claim.evidence_ids)
+        for evidence_id in claim.evidence_ids:
+            assert evidence_id in shown.citation
+
+
+def test_explanation_view_carries_the_uncertainties_verbatim(trusted):
+    view = reasoning_explanation_view(trusted)
+    assert view.uncertainties == tuple(trusted.uncertainties)
+    assert view.uncertainties
+
+
+def test_explanation_view_identity_and_timing_come_from_the_record(trusted, research):
+    view = reasoning_explanation_view(trusted)
+    assert view.symbol == trusted.symbol == research.symbol
+    assert view.data_cutoff == trusted.data_cutoff.strftime("%Y-%m-%d %H:%M %Z").strip()
+    assert view.generated_at == trusted.generated_at.strftime("%Y-%m-%d %H:%M %Z").strip()
+    assert view.heading == REASONING_HEADING
+    assert view.disclaimer == REASONING_DISCLAIMER
+
+
+def test_explanation_diagnostics_show_usage_provider_model_and_fingerprints(trusted):
+    view = reasoning_explanation_view(trusted)
+    rows = dict(view.diagnostics)
+    usage = trusted.usage
+    assert rows["Provider"] == usage.provider
+    assert rows["Model (as reported by the provider)"] == usage.model
+    assert rows["Input tokens"] == f"{usage.input_tokens:,}"
+    assert rows["Output tokens"] == f"{usage.output_tokens:,}"
+    assert rows["Latency"] == f"{usage.latency_ms:,} ms"
+    assert rows["Attempts"] == str(usage.attempt_count)
+    assert rows["Evidence fingerprint"] == trusted.evidence_fingerprint
+    assert rows["Reasoning fingerprint"] == trusted.reasoning_fingerprint
+    assert rows["Prompt"] == f"{trusted.prompt_id} v{trusted.prompt_version}"
+
+
+def test_explanation_diagnostics_carry_no_cost_prompt_text_or_credential(trusted):
+    view = reasoning_explanation_view(trusted)
+    labels = [label.lower() for label, _ in view.diagnostics]
+    for forbidden in ("cost", "price", "usd", "$", "key", "credential", "packet",
+                      "payload", "raw", "confidence", "score", "probability",
+                      "rating", "conviction", "signal"):
+        assert not [l for l in labels if forbidden in l], forbidden
+    # Pinned exactly: a new row has to be argued for here.
+    assert [label for label, _ in view.diagnostics] == [
+        "Provider", "Model (as reported by the provider)", "Input tokens",
+        "Output tokens", "Latency", "Attempts", "Evidence fingerprint",
+        "Reasoning fingerprint", "Prompt", "Output schema",
+    ]
+    for _, value in view.diagnostics:
+        assert "$" not in value
+        assert SECRET_MARKER not in value
+
+
+def test_explanation_view_is_immutable(trusted):
+    view = reasoning_explanation_view(trusted)
+    with pytest.raises(Exception):
+        view.summary = "changed"  # type: ignore[misc]
+    with pytest.raises(Exception):
+        view.claims[0].text = "changed"  # type: ignore[misc]
+    assert isinstance(view.claims, tuple)
+    assert isinstance(view.diagnostics, tuple)
+
+
+def test_explanation_view_exposes_no_score_confidence_or_recommendation(trusted):
+    view = reasoning_explanation_view(trusted)
+    for sample in (view, view.claims[0]):
+        surface = _public_surface(sample)
+        for forbidden in ("confidence", "probability", "score", "recommendation",
+                          "signal", "target", "entry", "exit", "allocation",
+                          "position", "rating", "prediction"):
+            offenders = [name for name in surface if forbidden in name.lower()]
+            assert not offenders, f"{type(sample).__name__} exposes {offenders}"
+
+
+def test_reasoning_wording_is_explanatory_and_denies_recommendation():
+    assert REASONING_HEADING == "AI explanation of research evidence"
+    for forbidden in ("recommendation", "prediction", "signal", "trade"):
+        assert forbidden not in REASONING_HEADING.lower()
+    assert "not a trading recommendation" in REASONING_DISCLAIMER.lower()
+    import re
+
+    from src.application import view_models as module
+
+    # Every reasoning-facing string constant the module defines, disclaimer
+    # and guidance included, checked on word stems so "buying" is caught as
+    # well as "buy".
+    constants = [value for name, value in vars(module).items()
+                 if isinstance(value, str) and name.isupper()
+                 and ("REASONING" in name or "FAILURE" in name or "UNAVAILABLE" in name)]
+    assert REASONING_DISCLAIMER in constants
+    joined = " ".join(constants).lower()
+    for stem in ("buy", "sell", "hold", "long", "short", "entry", "exit",
+                 "target", "stop loss", "position size", "allocation",
+                 "expected return", "confidence", "probability", "conviction",
+                 "score", "rating", "signal", "prediction", "predict", "forecast"):
+        assert not re.search(rf"\b{stem}\w*", joined), stem
+
+
+def test_the_privacy_note_states_what_is_sent_and_what_is_not():
+    low = REASONING_PRIVACY_NOTE.lower()
+    assert "bounded view" in low
+    assert "research evidence" in low
+    # What the evidence builder actually puts in the packet, named: the symbol
+    # is the most identifying thing that leaves the machine, so it is said.
+    for sent in ("symbol", "interval", "assessment state", "counts",
+                 "classification", "reason codes", "latest bar time",
+                 "evidence values"):
+        assert sent in low, sent
+    assert "sends" in low or "sent" in low
+    assert "external ai provider" in low
+    assert "outside this machine" in low
+    assert "generated locally" in low
+    assert "deterministic" in low
+    for not_sent in ("raw market history", "news", "external feeds",
+                     "scanner results", "paper positions"):
+        assert not_sent in low, not_sent
+    assert "are not sent" in low
+    for misleading in ("no data leaves", "nothing leaves", "never leaves",
+                       "stays on your machine", "does not leave"):
+        assert misleading not in low, misleading
+
+
+# -- staleness --------------------------------------------------------------
+
+
+def test_a_trusted_explanation_is_current_for_the_research_it_explained(trusted, research):
+    assert explanation_is_current(trusted, research)
+
+
+def test_an_explanation_of_another_symbol_is_not_current(trusted):
+    other = build_snapshot(RecordingProvider(count=120), "MSFT", Interval.DAY_1, now=clock)
+    assert other.built_at == trusted.data_cutoff  # same clock -- symbol alone differs
+    assert not explanation_is_current(trusted, other)
+
+
+def test_an_explanation_of_an_older_build_is_not_current(trusted):
+    later = build_snapshot(
+        RecordingProvider(count=120), "AAPL", Interval.DAY_1,
+        now=lambda: clock() + timedelta(minutes=1),
+    )
+    assert later.symbol == trusted.symbol
+    assert not explanation_is_current(trusted, later)
+
+
+def test_currency_reads_only_symbol_and_cutoff_off_the_record(trusted, research):
+    """No packet is rebuilt and no fingerprint recomputed to answer this."""
+    import ast
+    import inspect
+
+    from src.application import view_models
+
+    tree = ast.parse(inspect.getsource(view_models.explanation_is_current))
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert attrs == {"symbol", "data_cutoff", "built_at"}, attrs
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    assert not calls
+
+
+# -- failure mapping --------------------------------------------------------
+
+
+PROVIDER_CODES = [
+    ReasoningFailureCode.AUTHENTICATION_FAILED,
+    ReasoningFailureCode.RATE_LIMITED,
+    ReasoningFailureCode.PROVIDER_UNAVAILABLE,
+    ReasoningFailureCode.REQUEST_INVALID,
+    ReasoningFailureCode.UNEXPECTED,
+]
+VALIDATION_CODES = [
+    ReasoningFailureCode.OUTPUT_SCHEMA_FAILED,
+    ReasoningFailureCode.GROUNDING_FAILED,
+    ReasoningFailureCode.BOUNDARY_VIOLATION,
+]
+
+
+@pytest.mark.parametrize("code", PROVIDER_CODES, ids=lambda c: c.value)
+def test_every_provider_failure_maps_to_a_safe_provider_view(code):
+    view = reasoning_failure_view(ReasoningProviderError(code, SECRET_MARKER))
+    assert isinstance(view, ReasoningFailureView)
+    assert view.kind == FAILURE_PROVIDER
+    assert view.is_provider_failure and not view.is_validation_failure
+    assert not view.is_unavailable
+    assert view.code == code.value
+    assert view.message and view.guidance
+    for text in _every_string(view):
+        assert SECRET_MARKER not in text
+        assert "Traceback" not in text
+    assert "provider" in view.message.lower()
+
+
+@pytest.mark.parametrize("code", VALIDATION_CODES, ids=lambda c: c.value)
+def test_every_validation_failure_maps_to_a_distinct_rejection_view(code):
+    view = reasoning_failure_view(ReasoningValidationError(code, SECRET_MARKER))
+    assert view.kind == FAILURE_VALIDATION
+    assert view.is_validation_failure and not view.is_provider_failure
+    assert view.code == code.value
+    low = view.message.lower()
+    assert "returned an answer" in low
+    assert "refused to display" in low
+    for text in _every_string(view):
+        assert SECRET_MARKER not in text
+
+
+def test_the_provider_messages_name_the_remedy_by_code():
+    def message(code):
+        return reasoning_failure_view(ReasoningProviderError(code, "x")).message.lower()
+
+    assert "credential" in message(ReasoningFailureCode.AUTHENTICATION_FAILED)
+    assert "slower request rate" in message(ReasoningFailureCode.RATE_LIMITED)
+    unavailable = message(ReasoningFailureCode.PROVIDER_UNAVAILABLE)
+    assert "unavailable" in unavailable and "timed out" in unavailable
+    assert "network" in unavailable
+    invalid = message(ReasoningFailureCode.REQUEST_INVALID)
+    assert "rejected the request" in invalid and "model" in invalid
+    assert "unexpectedly" in message(ReasoningFailureCode.UNEXPECTED)
+
+
+def test_the_validation_messages_name_the_category_by_code():
+    def message(code):
+        return reasoning_failure_view(ReasoningValidationError(code, "x")).message.lower()
+
+    assert "required structure" in message(ReasoningFailureCode.OUTPUT_SCHEMA_FAILED)
+    grounding = message(ReasoningFailureCode.GROUNDING_FAILED)
+    assert "evidence it was not given" in grounding
+    assert "explanation boundary" in message(ReasoningFailureCode.BOUNDARY_VIOLATION)
+
+
+def test_provider_and_validation_failures_do_not_collapse():
+    rate = reasoning_failure_view(
+        ReasoningProviderError(ReasoningFailureCode.RATE_LIMITED, "x")
+    )
+    grounding = reasoning_failure_view(
+        ReasoningValidationError(ReasoningFailureCode.GROUNDING_FAILED, "x")
+    )
+    assert rate.kind != grounding.kind
+    assert rate.message != grounding.message
+    assert rate.guidance != grounding.guidance
+    assert "returned an answer" not in rate.message.lower()
+    assert "returned an answer" in grounding.message.lower()
+    # Neither is a generic "AI error".
+    for view in (rate, grounding):
+        assert view.message.lower() not in {"ai error", "an error occurred", "error"}
+
+
+def test_unavailable_maps_to_the_local_no_assessment_state():
+    view = reasoning_failure_view(ReasoningUnavailable("nothing to explain"))
+    assert view.kind == FAILURE_UNAVAILABLE
+    assert view.is_unavailable
+    assert not view.is_provider_failure and not view.is_validation_failure
+    assert view.message == REASONING_NO_ASSESSMENT
+    assert "provider" not in view.message.lower()
+    assert "no provider was contacted" in view.guidance.lower()
+    assert view.code == ""
+
+
+def test_the_failure_view_retains_no_exception_and_no_detail():
+    error = ReasoningProviderError(ReasoningFailureCode.RATE_LIMITED, SECRET_MARKER)
+    view = reasoning_failure_view(error)
+    for name in vars(view):
+        value = getattr(view, name)
+        assert not isinstance(value, BaseException)
+        assert isinstance(value, str)
+    assert error.detail == SECRET_MARKER  # the detail exists ...
+    assert SECRET_MARKER not in repr(view)  # ... and never reaches the view
+
+
+def test_the_failure_view_is_immutable():
+    view = reasoning_failure_view(
+        ReasoningProviderError(ReasoningFailureCode.UNEXPECTED, "x")
+    )
+    with pytest.raises(Exception):
+        view.message = "changed"  # type: ignore[misc]
+
+
+def test_the_failure_mapper_refuses_unknown_exceptions():
+    """A programming error is not laundered into a provider outage."""
+    for error in (ValueError("x"), KeyError("k"), RuntimeError("r"), Exception("e")):
+        with pytest.raises(TypeError):
+            reasoning_failure_view(error)
+
+
+def test_failure_messages_contain_no_recommendation_or_percentage():
+    views = [reasoning_failure_view(ReasoningProviderError(c, "x")) for c in PROVIDER_CODES]
+    views += [reasoning_failure_view(ReasoningValidationError(c, "x")) for c in VALIDATION_CODES]
+    views.append(reasoning_failure_view(ReasoningUnavailable("x")))
+    for view in views:
+        for text in (view.message, view.guidance):
+            assert "%" not in text
+            low = f" {text.lower()} "
+            for word in FORBIDDEN_ACTION_WORDS:
+                assert f" {word} " not in low
+
+
+def test_reasoning_view_construction_touches_no_network_or_filesystem(
+    monkeypatch, trusted, research
+):
+    import builtins
+    import socket
+
+    def forbidden(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("view model reached outside the process")
+
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(builtins, "open", forbidden)
+    reasoning_explanation_view(trusted)
+    reasoning_failure_view(ReasoningProviderError(ReasoningFailureCode.RATE_LIMITED, "x"))
+    assert explanation_is_current(trusted, research)

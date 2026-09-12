@@ -276,14 +276,94 @@ def test_the_reasoning_domain_still_imports_no_application_module():
         assert "src.application" not in source(path), path.name
 
 
-def test_the_dashboard_has_not_started_consuming_reasoning_yet():
-    """Stage F owns the interface. Until then this stays a fact, not a promise."""
+#: The dashboard files that consume reasoning, and the only ones. Stage F2
+#: replaces Stage E's placeholder ("the dashboard has not started consuming
+#: reasoning yet") with the positive rule: it consumes it, through
+#: ``src.application`` alone, from exactly these files.
+DASHBOARD_REASONING_CONSUMERS = {"app.py"}
+
+
+def test_the_dashboard_consumes_reasoning_only_through_the_application_layer():
+    """The reasoning domain is never imported by the interface, in any file.
+
+    ``app.py`` imports the failure classes from ``src.application.reasoning``
+    -- the re-export Stage E provided for it -- and the service, availability
+    enum and composition entry points from the package. No dashboard file
+    imports ``src.reasoning``, and none other than the one named above imports
+    the application reasoning module at all.
+    """
     for path in sorted((SRC / "dashboard").rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
         names = imported(path)
         assert not imports_package(names, "src.reasoning"), path.name
-        assert not imports_package(names, "src.application.reasoning"), path.name
+        if path.name in DASHBOARD_REASONING_CONSUMERS:
+            assert imports_package(names, "src.application.reasoning"), (
+                f"{path.name} is a consumer but no longer reaches the re-exports; "
+                "drop it from DASHBOARD_REASONING_CONSUMERS"
+            )
+        else:
+            assert not imports_package(names, "src.application.reasoning"), path.name
+
+
+def test_the_dashboard_reaches_reasoning_names_only_from_the_application_layer():
+    """Every reasoning name the interface uses arrives from ``src.application``.
+
+    Checked per imported name rather than per module, so ``from src.reasoning
+    import X`` and ``import src.reasoning.models as m`` fail alike, and so a
+    reasoning type that stops being re-exported cannot be fetched from the
+    domain instead.
+    """
+    tree = ast.parse(source(SRC / "dashboard" / "app.py"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            # Reasoning *types* and *entry points* -- the service, the
+            # availability enum, the failures, the composition functions --
+            # come from the application layer. The dashboard's own render
+            # module is not one of these and is imported from src.dashboard.
+            if any(alias.name.startswith("Reasoning") or
+                   alias.name.endswith("reasoning_service") or
+                   alias.name.endswith("reasoning_configuration")
+                   for alias in node.names):
+                assert node.module.startswith("src.application"), node.module
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("src.reasoning"), alias.name
+
+
+def test_the_dashboard_view_model_reaches_reasoning_types_through_stage_e():
+    """``view_models.py`` formats the trusted snapshot and maps the failures.
+
+    It gets every reasoning type from ``.reasoning`` -- the application's own
+    re-exports -- and never from ``src.reasoning``, so the presentation layer
+    depends on the same surface the dashboard does.
+    """
+    path = SRC / "application" / "view_models.py"
+    names = imported(path)
+    assert not imports_package(names, "src.reasoning"), names
+    tree = ast.parse(source(path))
+    reasoning_imports = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and any("Reasoning" in alias.name for alias in node.names)
+    ]
+    assert reasoning_imports, "view_models no longer formats reasoning"
+    for node in reasoning_imports:
+        assert node.level == 1 and node.module == "reasoning", ast.dump(node)
+
+
+def test_the_view_model_uses_only_the_application_facing_reasoning_surface():
+    """The view model imports failure classes and the trusted snapshot, never
+    the packet, request, provider or validator."""
+    path = SRC / "application" / "view_models.py"
+    assert not (imported_names(path) & {
+        "EvidencePacket", "ReasoningRequest", "ReasoningProvider",
+        "ProviderReasoningResponse", "build_packet", "validate_provider_response",
+    })
+    assert not (called(path) & {"explain", "availability", "generate",
+                                "build_packet", "validate_provider_response",
+                                "ReasoningSnapshot", "ReasoningService",
+                                "build_reasoning_service"})
 
 
 # -- the public surface --------------------------------------------------

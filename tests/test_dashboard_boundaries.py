@@ -729,12 +729,403 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
     # pending_research_symbol a one-shot navigation handoff. Listed
     # individually for the same reason: scan_results, scan_counters or
     # scan_progress would be pieces of a snapshot and must still fail here.
+    # The reasoning_* keys are the Phase 11A Stage F2 additions and hold the
+    # same three shapes again: reasoning_service is the composed
+    # ReasoningService dependency, retained for the session; reasoning_snapshot
+    # one whole trusted ReasoningSnapshot; reasoning_failure one whole safe
+    # ReasoningFailureView. Listed individually for the same reason: a key such
+    # as reasoning_claims, reasoning_response or reasoning_request would be a
+    # piece of a result -- or worse, an unvalidated one -- and must still fail.
     assert assigned <= {
         "snapshot", "failure", "paper", "paper_error", "provider", "clock",
         "news_snapshot", "news_service", "news_failure",
         "feed_snapshot", "feed_service", "feed_failure",
         "scan_snapshot", "scan_failure", "scan_universes",
         "scan_universe_id", "pending_research_symbol",
+        "reasoning_service", "reasoning_snapshot", "reasoning_failure",
     }
     for forbidden in ("observations", "assessment", "features", "series"):
         assert forbidden not in assigned
+    # Nothing that could carry a credential, a client or an untrusted answer
+    # is held between runs under any name.
+    for fragment in ("client", "api_key", "credential", "raw_response",
+                     "request", "packet", "exception", "payload"):
+        assert not [key for key in assigned if fragment in key], fragment
+
+
+# -- Phase 11A Stage F2: how the dashboard may reach reasoning ----------
+#
+# The dashboard consumes reasoning through ``src.application`` and nothing
+# else. It receives a composed service, asks it two questions, and renders what
+# comes back through a view model. Every pipeline step in between -- packet,
+# request, provider call, validation -- has exactly one owner in Stage E, and
+# the rules below make sure the interface never grows a second copy of any of
+# them.
+
+APP = SRC / "dashboard" / "app.py"
+REASONING_VIEW = SRC / "dashboard" / "reasoning_view.py"
+
+#: Names through which the reasoning pipeline could be driven directly.
+REASONING_PIPELINE_NAMES = frozenset({
+    "EvidencePacket", "ReasoningRequest", "build_packet",
+    "validate_provider_response", "ReasoningProvider", "generate",
+    "ProviderReasoningResponse", "AnthropicReasoningProvider",
+    "evidence_fingerprint", "reasoning_fingerprint",
+})
+
+
+def parsed(path: pathlib.Path) -> ast.Module:
+    return ast.parse(path.read_text(), filename=str(path))
+
+
+def calls_in(tree: ast.AST, method: str) -> list[ast.Call]:
+    return [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == method
+    ]
+
+
+def enclosing_functions(tree: ast.AST) -> dict[ast.AST, str]:
+    """Every node mapped to the name of the function that contains it.
+
+    Takes the tree rather than the path: node identity is per parse, so the
+    caller must ask about the same tree it found the node in.
+    """
+    owner: dict[ast.AST, str] = {}
+
+    def visit(node: ast.AST, current: str) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            current = node.name
+        owner[node] = current
+        for child in ast.iter_child_nodes(node):
+            visit(child, current)
+
+    visit(tree, "<module>")
+    return owner
+
+
+@pytest.mark.parametrize("path", DASHBOARD_FILES, ids=lambda p: p.name)
+def test_the_dashboard_never_drives_the_reasoning_pipeline_directly(path):
+    """Checked on used identifiers, so a docstring naming a step is not a call."""
+    offenders = code_identifiers(path) & REASONING_PIPELINE_NAMES
+    assert not offenders, f"{path.name} reaches the reasoning pipeline: {offenders}"
+
+
+@pytest.mark.parametrize("path", DASHBOARD_FILES, ids=lambda p: p.name)
+def test_the_dashboard_never_calls_generate(path):
+    """The provider is asked by Stage E and by nothing in the interface."""
+    assert not calls_in(parsed(path), "generate"), f"{path.name} calls .generate()"
+
+
+def test_exactly_one_production_call_site_asks_for_an_explanation():
+    """One ``.explain(...)`` in the whole dashboard, and it is inside the action.
+
+    Proved on the AST rather than by counting text: the call must belong to the
+    function the button branch dispatches to, so a second call site -- in a
+    render pass, in ``refresh``, at module level -- fails here by name.
+    """
+    sites = [
+        (path.name, tree, call)
+        for path in DASHBOARD_FILES
+        for tree in [parsed(path)]
+        for call in calls_in(tree, "explain")
+    ]
+    assert len(sites) == 1, [name for name, _, _ in sites]
+    name, tree, call = sites[0]
+    assert name == "app.py"
+    assert enclosing_functions(tree)[call] == "explain_with_ai"
+
+
+def test_the_explanation_action_is_dispatched_only_from_the_button_branch():
+    """``explain_with_ai`` is called once, inside ``if st.button(...)``.
+
+    Walks up from the call to the ``If`` that contains it and requires that
+    test to be the ``Explain with AI`` button, so the action cannot be moved to
+    load, to a rerun, to ``refresh`` or into a render pass.
+    """
+    tree = parsed(APP)
+    links = _parents(tree)
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "explain_with_ai"
+    ]
+    assert len(calls) == 1, "explain_with_ai must be dispatched from one place"
+    current: ast.AST | None = calls[0]
+    gated_by_button = False
+    rechecks_eligibility = False
+    while current is not None:
+        parent = links.get(current)
+        if isinstance(parent, ast.If) and current is not parent.test:
+            test = parent.test
+            # The branch re-checks the service's answer rather than trusting
+            # the widget's disabled flag alone -- the same belt and braces the
+            # scan control uses with its universe.
+            if isinstance(test, ast.Name) and test.id == "eligible":
+                rechecks_eligibility = True
+            if (
+                isinstance(test, ast.Call)
+                and isinstance(test.func, ast.Attribute)
+                and test.func.attr == "button"
+                and any(
+                    kw.arg == "key"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value == "explain_with_ai_button"
+                    for kw in test.keywords
+                )
+            ):
+                gated_by_button = True
+        current = parent
+    assert gated_by_button, "explain_with_ai is reachable without the button"
+    assert rechecks_eligibility, "the branch must re-check availability itself"
+    assert enclosing_functions(tree)[calls[0]] == "render_reasoning_section"
+
+
+def test_no_reasoning_call_happens_in_refresh_or_at_module_level():
+    tree = parsed(APP)
+    owner = enclosing_functions(tree)
+    for method in ("explain", "availability"):
+        for call in calls_in(tree, method):
+            assert owner[call] not in {"<module>", "refresh", "main", "init_session",
+                                       "render_controls", "scan_market",
+                                       "refresh_news", "refresh_feeds"}, method
+
+
+def test_the_explanation_action_catches_only_reasoning_failures():
+    """No ``except Exception`` and no bare ``except`` around the provider call.
+
+    A broad handler would turn a programming error into a "provider failure"
+    on screen, which is a bug wearing an outage's costume. The three
+    application-facing failure types are the whole vocabulary.
+    """
+    tree = ast.parse(APP.read_text(), filename=str(APP))
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "explain_with_ai"
+    )
+    handlers = [node for node in ast.walk(function) if isinstance(node, ast.ExceptHandler)]
+    assert handlers, "the action must catch the reasoning failures"
+    caught: set[str] = set()
+    for handler in handlers:
+        assert handler.type is not None, "bare except in explain_with_ai"
+        names = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        for name in names:
+            assert isinstance(name, ast.Name), ast.dump(name)
+            caught.add(name.id)
+    assert caught == {
+        "ReasoningProviderError", "ReasoningValidationError", "ReasoningUnavailable",
+    }, caught
+
+
+def test_the_action_stores_only_the_mapped_failure_view():
+    """The exception is mapped, never assigned. ``exc`` reaches one call only."""
+    tree = ast.parse(APP.read_text(), filename=str(APP))
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "explain_with_ai"
+    )
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign):
+            for inner in ast.walk(node.value):
+                if isinstance(inner, ast.Name) and inner.id == "exc":
+                    assert (
+                        isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Name)
+                        and node.value.func.id == "reasoning_failure_view"
+                    ), "the exception object must not be stored"
+    for node in ast.walk(function):
+        assert not isinstance(node, ast.Attribute) or node.attr != "detail", (
+            "explain_with_ai reads the error detail"
+        )
+    for path in DASHBOARD_FILES:
+        assert "exception" not in {
+            node.func.attr for node in ast.walk(parsed(path))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }, f"{path.name} calls st.exception()"
+
+
+def test_the_reasoning_path_never_reads_a_failure_detail():
+    """``.detail`` is not read anywhere an error could be the receiver.
+
+    ``FailureReport.detail`` (the Phase 7 refresh failure) and the scanner and
+    feed row details are legitimately rendered from view models elsewhere in
+    the dashboard; the functions and module that handle reasoning read none.
+    """
+    tree = parsed(APP)
+    owner = enclosing_functions(tree)
+    reasoning_functions = {"explain_with_ai", "render_reasoning_section",
+                           "reasoning_service"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "detail":
+            assert owner[node] not in reasoning_functions, owner[node]
+    assert "detail" not in code_identifiers(REASONING_VIEW)
+    # The mapper itself: no attribute named detail and no str(error), checked
+    # on its body so its docstring may say "detail is never read" and mean it.
+    view_models = parsed(SRC / "application" / "view_models.py")
+    mapper = next(
+        node for node in ast.walk(view_models)
+        if isinstance(node, ast.FunctionDef) and node.name == "reasoning_failure_view"
+    )
+    for node in ast.walk(mapper):
+        assert not (isinstance(node, ast.Attribute) and node.attr == "detail")
+        assert not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "str"
+            and any(isinstance(a, ast.Name) and a.id == "error" for a in node.args)
+        )
+
+
+def test_the_reasoning_view_only_draws():
+    """No button, no service, no session state, no environment, no domain."""
+    tree = ast.parse(REASONING_VIEW.read_text(), filename=str(REASONING_VIEW))
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    for forbidden in ("button", "form", "form_submit_button", "download_button",
+                      "explain", "availability", "generate", "rerun"):
+        assert forbidden not in called, f"reasoning_view calls .{forbidden}()"
+    used = code_identifiers(REASONING_VIEW)
+    for forbidden in ("session_state", "ReasoningService", "build_reasoning_service",
+                      "describe_reasoning_configuration", "environ", "getenv",
+                      "ReasoningSnapshot", "snapshot", "assessment"):
+        assert forbidden not in used, f"reasoning_view uses {forbidden}"
+    for name in imported_modules(REASONING_VIEW):
+        root = name.split(".")[0]
+        if root == "src":
+            assert name == "src.application.view_models", name
+        else:
+            assert root in {"__future__", "streamlit"}, name
+
+
+def test_the_reasoning_view_cannot_touch_paper_or_scanner_state():
+    text = REASONING_VIEW.read_text()
+    for forbidden in ("PaperSession", "open_long", "close_position", "portfolio",
+                      "MarketScanner", "scan_snapshot", "news_snapshot",
+                      "feed_snapshot"):
+        assert forbidden not in text
+
+
+def test_no_paper_action_depends_on_a_reasoning_value():
+    """An explanation may not gate, feed or prefill a paper action."""
+    reasoning_names = {
+        "reasoning_snapshot", "reasoning_failure", "reasoning_service",
+        "ReasoningExplanationView", "ReasoningFailureView", "explanation",
+        "explained", "retained",
+    }
+    for path in DASHBOARD_FILES + APPLICATION_FILES:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        links = _parents(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if called not in MUTATOR_NAMES | {"render_open_form", "render_close_form"}:
+                continue
+            for argument in [*node.args, *(kw.value for kw in node.keywords)]:
+                for inner in ast.walk(argument):
+                    if isinstance(inner, ast.Name):
+                        assert inner.id not in reasoning_names, (
+                            f"{path.name}: {called}() receives {inner.id!r}"
+                        )
+                    if isinstance(inner, ast.Attribute):
+                        assert inner.attr not in reasoning_names, (
+                            f"{path.name}: {called}() reads {inner.attr!r}"
+                        )
+            current: ast.AST | None = node
+            while current is not None:
+                parent = links.get(current)
+                if isinstance(parent, (ast.If, ast.IfExp)) and current is not parent.test:
+                    for inner in ast.walk(parent.test):
+                        name = getattr(inner, "id", getattr(inner, "attr", ""))
+                        assert name not in reasoning_names, (
+                            f"{path.name}: {called}() is conditional on {name!r}"
+                        )
+                current = parent
+
+
+def test_the_scanner_and_feeds_never_see_a_reasoning_name():
+    """No AI column, score or per-row explanation, and no feed/news reasoning."""
+    for name in ("scanner_view.py", "news_view.py", "feeds_view.py", "paper_view.py"):
+        used = code_identifiers(SRC / "dashboard" / name)
+        for forbidden in ("reasoning_service", "reasoning_snapshot", "explain",
+                          "ReasoningService", "render_reasoning",
+                          "reasoning_explanation_view"):
+            assert forbidden not in used, f"{name} uses {forbidden}"
+    for name in ("scanner.py", "news.py", "feeds.py", "paper.py"):
+        used = code_identifiers(SRC / "application" / name)
+        assert "ReasoningService" not in used, name
+        assert "explain" not in used, name
+
+
+def test_the_research_scanner_panel_passes_no_snapshot_to_reasoning():
+    """Exactly one ``availability`` call, and it receives the research snapshot."""
+    tree = parsed(APP)
+    calls = calls_in(tree, "availability")
+    assert len(calls) == 1
+    (call,) = calls
+    assert [ast.unparse(a) for a in call.args] == ["snapshot"]
+    assert enclosing_functions(tree)[call] == "render_reasoning_section"
+
+
+def test_the_explanation_scope_is_one_research_snapshot():
+    """``explain`` is passed the one research snapshot and nothing else."""
+    (call,) = calls_in(parsed(APP), "explain")
+    assert [ast.unparse(a) for a in call.args] == ["snapshot"]
+    assert not call.keywords
+
+
+def test_the_dashboard_has_no_reasoning_loop_retry_or_fallback():
+    tree = parsed(APP)
+    owner = enclosing_functions(tree)
+    for node in ast.walk(tree):
+        if owner.get(node) in {"explain_with_ai", "render_reasoning_section",
+                               "reasoning_service"}:
+            assert not isinstance(node, (ast.For, ast.While, ast.AsyncFunctionDef,
+                                         ast.Await, ast.Try)) or (
+                isinstance(node, ast.Try) and owner[node] == "explain_with_ai"
+            ), f"{type(node).__name__} in {owner[node]}"
+    for path in DASHBOARD_FILES:
+        used = code_identifiers(path)
+        for forbidden in ("retry", "fallback", "sleep", "Thread", "run_in_executor",
+                          "create_task", "logging", "getLogger", "cache_data",
+                          "cache_resource", "lru_cache"):
+            assert forbidden not in used, f"{path.name} uses {forbidden}"
+
+
+def test_the_privacy_disclosure_is_rendered_with_the_action():
+    """The disclosure and the button live in the same function, and the
+    disclosure is unconditional: it is written before any branch."""
+    tree = ast.parse(APP.read_text(), filename=str(APP))
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "render_reasoning_section"
+    )
+    top_level_calls = [
+        ast.unparse(statement.value)
+        for statement in function.body
+        if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+    ]
+    assert "st.caption(REASONING_PRIVACY_NOTE)" in top_level_calls
+    first_branch = next(
+        i for i, statement in enumerate(function.body) if isinstance(statement, ast.If)
+    )
+    disclosure_at = next(
+        i for i, statement in enumerate(function.body)
+        if isinstance(statement, ast.Expr)
+        and ast.unparse(statement.value) == "st.caption(REASONING_PRIVACY_NOTE)"
+    )
+    assert disclosure_at < first_branch
+
+
+def test_no_dashboard_or_view_model_claims_nothing_leaves_the_machine():
+    for path in DASHBOARD_FILES + [SRC / "application" / "view_models.py"]:
+        text = path.read_text().lower()
+        for phrase in ("no data leaves", "nothing leaves your", "never leaves your",
+                       "stays on your machine", "does not leave your"):
+            assert phrase not in text, f"{path.name}: {phrase!r}"

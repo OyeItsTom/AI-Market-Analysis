@@ -313,6 +313,12 @@ def test_the_legacy_session_allowlist_is_exactly_this():
         "feed_snapshot", "feed_service", "feed_failure",
         "scan_snapshot", "scan_failure", "scan_universes",
         "scan_universe_id", "pending_research_symbol",
+        # Phase 11A Stage F2, and the same three shapes as news and feeds:
+        # reasoning_service is the composed dependency retained for the
+        # session, reasoning_snapshot one whole trusted ReasoningSnapshot,
+        # reasoning_failure one whole safe ReasoningFailureView. No client,
+        # credential, request, packet, raw response or exception has a key.
+        "reasoning_service", "reasoning_snapshot", "reasoning_failure",
     }, "the session-state allowlist was widened"
 
 
@@ -324,6 +330,9 @@ def test_the_legacy_button_allowlist_is_exactly_this():
     assert allowed == {
         "refresh_button", "refresh_news_button", "refresh_feeds_button",
         "reload_universes_button", "scan_market_button",
+        # Phase 11A Stage F2: the one explanatory control, and the only
+        # AI-related one. A second would have to be argued here.
+        "explain_with_ai_button",
     }, "the control allowlist was widened"
     source = LEGACY_SMOKE.read_text(encoding="utf-8")
     block = source.split("def test_the_research_panel_offers_no_paper_action_control")[1]

@@ -8,7 +8,7 @@ This module is layout and dispatch. It owns no research rule, no risk rule and
 no formatting: it reads widgets, calls one application-layer function, stores
 the result, and hands view models to the two render modules.
 
-Three behaviours here are load-bearing rather than incidental.
+Four behaviours here are load-bearing rather than incidental.
 
 **Nothing fetches until a human asks.** The symbol starts empty and the provider
 is called only inside the ``Refresh`` branch, so starting the dashboard, typing,
@@ -28,6 +28,14 @@ again.
 variable and only assigned into session state once the whole build succeeded, so
 a provider outage leaves the previous complete snapshot on screen instead of a
 half-updated one.
+
+**An AI explanation is asked for, never assumed.** Phase 11A adds one explicit
+control, ``Explain with AI``, and the single call that asks a provider lives in
+its branch and nowhere else: not at load, not on a rerun, not when a symbol or
+interval changes, not when research is refreshed. What the provider returns is
+kept only once the reasoning domain has validated it, and it is discarded the
+moment the research it explained is replaced. When no provider is configured
+the control is disabled and everything else on this dashboard is unchanged.
 """
 
 from __future__ import annotations
@@ -44,11 +52,20 @@ from src.application import (
     FailureKind,
     FailureReport,
     PaperSession,
+    ReasoningAvailability,
+    ReasoningService,
+    ReasoningUnavailable,
     build_provenance,
+    build_reasoning_service,
     build_snapshot,
     default_provider,
+    describe_reasoning_configuration,
     display_names,
 )
+# The two failure classes the explanation action has to tell apart. Stage E
+# re-exports them for exactly this purpose; the reasoning domain itself is not
+# imported here, and the boundary suite checks that it never is.
+from src.application.reasoning import ReasoningProviderError, ReasoningValidationError
 from src.application.feeds import FeedService, build_service as build_feed_service
 from src.application.scanner import (
     MarketScanner,
@@ -57,8 +74,14 @@ from src.application.scanner import (
 )
 from src.application.news import NewsService, SymbolNotSupported, build_service
 from src.application.view_models import (
+    REASONING_HEADING,
+    REASONING_NO_ASSESSMENT,
+    REASONING_PRIVACY_NOTE,
     RESEARCH_DISCLAIMER,
     SCANNER_INTERVAL_NOTE,
+    explanation_is_current,
+    reasoning_explanation_view,
+    reasoning_failure_view,
     feeds_view,
     scanner_view,
     universe_option_label,
@@ -80,6 +103,7 @@ from src.dashboard.paper_view import (
 from src.dashboard.feeds_view import render_feeds
 from src.dashboard.scanner_view import render_market_overview
 from src.dashboard.news_view import render_news
+from src.dashboard.reasoning_view import render_reasoning, render_reasoning_failure
 from src.dashboard.research_view import (
     render_assessment,
     render_features,
@@ -149,6 +173,18 @@ def init_session() -> None:
         # The safe handoff key. Never a widget key: assigning symbol_input
         # after its widget exists raises StreamlitWidgetAlreadyInstantiatedError.
         state.pending_research_symbol = None
+    if "reasoning_service" not in state:
+        # The composed ReasoningService, or None. Injectable like the provider:
+        # a test seeds a fake so the explanation path runs without a network.
+        # Composed lazily the first time the Research tab needs it, never here.
+        state.reasoning_service = None
+    if "reasoning_snapshot" not in state:
+        # One whole trusted ReasoningSnapshot, or None. Never a raw provider
+        # response, a request, a packet or anything the validator refused.
+        state.reasoning_snapshot = None
+    if "reasoning_failure" not in state:
+        # One whole ReasoningFailureView, or None. Never the exception.
+        state.reasoning_failure = None
 
 
 def refresh(symbol: str, interval) -> None:
@@ -183,6 +219,10 @@ def refresh(symbol: str, interval) -> None:
     # Atomic publication: previous snapshot replaced only on full success.
     state.snapshot = built
     state.failure = None
+    # An explanation describes the research it was built from, and that
+    # research has just been replaced. Both outcomes go; the service stays.
+    state.reasoning_snapshot = None
+    state.reasoning_failure = None
 
 
 def refresh_news(symbol: str) -> None:
@@ -499,6 +539,87 @@ def apply_close(request) -> None:
         state.paper_error = exc.message
 
 
+def reasoning_service() -> ReasoningService | None:
+    """The composed service, built the first time it is needed and then kept.
+
+    Composition reads two environment variables and, when both are present,
+    builds a client -- no request is made. ``None`` means the feature is not
+    configured, and nothing is stored in that case, so a later run asks again
+    rather than remembering an absence. That costs two variable reads and
+    matches how the news and feed services are started on demand.
+
+    This is dependency retention, not a cache: what is kept is the thing that
+    asks, never anything it answered.
+    """
+    state = st.session_state
+    if state.reasoning_service is None:
+        service = build_reasoning_service()
+        if service is not None:
+            state.reasoning_service = service
+    return state.reasoning_service
+
+
+def explain_with_ai(service: ReasoningService, snapshot) -> None:
+    """The one place a provider is asked. Entered only from the button branch.
+
+    Both previous outcomes are cleared first, so exactly one of them is set on
+    the way out and a stale explanation can never sit beside a fresh failure.
+    Every failure the application layer defines is turned into words by the
+    view-model mapper and the exception itself is dropped; anything else is a
+    programming error and propagates as one.
+    """
+    state = st.session_state
+    state.reasoning_snapshot = None
+    state.reasoning_failure = None
+    try:
+        with st.spinner("Asking the AI provider to explain this research…"):
+            explained = service.explain(snapshot)
+    except (ReasoningProviderError, ReasoningValidationError, ReasoningUnavailable) as exc:
+        state.reasoning_failure = reasoning_failure_view(exc)
+        return
+    state.reasoning_snapshot = explained
+
+
+def render_reasoning_section(snapshot) -> None:
+    """The AI explanation of one research snapshot: disclosure, action, result.
+
+    Eligibility is the service's answer and nobody else's. The button is
+    enabled by ``availability`` and the branch checks it again, exactly as the
+    scan control does with its universe; nothing here reads the assessment to
+    decide.
+    """
+    state = st.session_state
+    st.subheader(REASONING_HEADING)
+    st.caption(REASONING_PRIVACY_NOTE)
+
+    service = reasoning_service()
+    if service is None:
+        st.info(describe_reasoning_configuration())
+        st.button(
+            "Explain with AI", key="explain_with_ai_button", disabled=True,
+            help="Configure an AI provider to enable this. Nothing else needs it.",
+        )
+        return
+
+    eligible = service.availability(snapshot) is ReasoningAvailability.AVAILABLE
+    if not eligible:
+        st.info(REASONING_NO_ASSESSMENT)
+    if st.button(
+        "Explain with AI", key="explain_with_ai_button", disabled=not eligible,
+        help="Sends the evidence described above to the configured AI provider.",
+    ):
+        if eligible:
+            explain_with_ai(service, snapshot)
+
+    failure = state.reasoning_failure
+    if failure is not None:
+        render_reasoning_failure(failure)
+
+    retained = state.reasoning_snapshot
+    if retained is not None and explanation_is_current(retained, snapshot):
+        render_reasoning(reasoning_explanation_view(retained))
+
+
 def render_controls() -> None:
     """Symbol, interval and Refresh. The only way a fetch is ever started."""
     st.sidebar.header("Research controls")
@@ -594,6 +715,10 @@ def render_research() -> None:
             warmup_bars=snapshot.warmup_bars,
         )
     )
+    # Last, and after a divider: the deterministic assessment stays primary,
+    # and the explanation is of it.
+    st.divider()
+    render_reasoning_section(snapshot)
 
 
 def render_paper() -> None:
