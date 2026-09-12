@@ -397,13 +397,191 @@ FORBIDDEN_IMPORTS = (
 )
 
 
+#: The one file in these two layers permitted to import a model vendor, and the
+#: one vendor it may import.
+#:
+#: Phase 11A Stage F1. Stage D's adapter refuses to construct a client -- it
+#: receives one already built, holds no credential and reads nothing from the
+#: process -- and Stage E refuses to know a vendor exists at all. Something has
+#: to compose the two, and this is the file that does it. The permission is
+#: written as data rather than as an ``if`` so that adding a second one is an
+#: edit somebody has to make and defend, and so the test below can insist the
+#: permission is actually being exercised: an exemption nobody uses is a hole
+#: nobody is watching.
+VENDOR_EXEMPTIONS = {"reasoning_composition.py": frozenset({"anthropic"})}
+
+
 @pytest.mark.parametrize("path", DASHBOARD_FILES + APPLICATION_FILES, ids=lambda p: p.name)
 def test_phase_seven_imports_nothing_out_of_scope(path):
     names = imported_modules(path)
+    exempt = VENDOR_EXEMPTIONS.get(path.name, frozenset())
     for forbidden in FORBIDDEN_IMPORTS:
+        if forbidden in exempt:
+            continue
         assert not imports_package(names, forbidden), (
             f"{path.relative_to(REPO)} imports {forbidden}"
         )
+
+
+def test_the_vendor_exemption_is_exercised_rather_than_merely_granted():
+    """A permission nobody uses is a hole nobody is watching.
+
+    If the composition module stops importing the SDK -- because the vendor
+    moved, or because the file was emptied and left behind -- the exemption must
+    be deleted rather than left standing as a quiet allowance for whatever is
+    written in that file next.
+    """
+    for name, vendors in VENDOR_EXEMPTIONS.items():
+        matches = [path for path in APPLICATION_FILES if path.name == name]
+        assert matches, f"{name} is exempted but does not exist"
+        for path in matches:
+            names = imported_modules(path)
+            for vendor in vendors:
+                assert imports_package(names, vendor), (
+                    f"{name} is exempted for {vendor} but no longer imports it; "
+                    "delete the exemption rather than leaving it open"
+                )
+
+
+def test_exactly_two_production_files_import_the_model_vendor():
+    """Swept across the whole of ``src``, not only the Phase 7 layers.
+
+    Stage D permitted one importer, Stage F1 makes it two, and the split of
+    responsibility is the point: the adapter owns the provider, the composition
+    module owns the client. A third importer would mean something had started
+    reaching the vendor without going through either, which is how a
+    provider-neutral contract quietly becomes one provider plus paperwork.
+    """
+    importers = sorted(
+        path.relative_to(SRC).as_posix()
+        for path in python_files("src")
+        if imports_package(imported_modules(path), "anthropic")
+    )
+    assert importers == [
+        "application/reasoning_composition.py",
+        "reasoning/anthropic_adapter.py",
+    ], importers
+
+
+#: Constructors that open a session with a vendor and read a credential to do it.
+VENDOR_CLIENT_CONSTRUCTORS = frozenset({
+    "Anthropic", "AsyncAnthropic", "AnthropicBedrock", "AnthropicVertex",
+    "AnthropicAWS", "AnthropicFoundry", "OpenAI", "AsyncOpenAI",
+})
+
+
+@pytest.mark.parametrize("path", DASHBOARD_FILES + APPLICATION_FILES, ids=lambda p: p.name)
+def test_only_the_composition_module_constructs_a_vendor_client(path):
+    """The *call*, not the import.
+
+    ``src/application/reasoning.py`` is the one this matters most for: Stage E
+    is provider-neutral by construction, and a ``client or Anthropic()`` default
+    appearing there would reintroduce both the credential and the vendor into
+    the module whose whole value is not having either. Its own suite says so
+    too; this states it generically, so a *new* application file cannot acquire
+    the capability without failing here.
+    """
+    tree = ast.parse(path.read_text(), filename=str(path))
+    constructed = {
+        getattr(node.func, "id", getattr(node.func, "attr", ""))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    } & VENDOR_CLIENT_CONSTRUCTORS
+    if path.name == "reasoning_composition.py":
+        assert constructed == {"Anthropic"}, (
+            "the composition module no longer builds the client it exists to build"
+        )
+        return
+    assert not constructed, f"{path.name} constructs {constructed}"
+
+
+# -- who may read the reasoning environment -----------------------------
+
+#: Read by the composition module and by nothing else in these two layers.
+REASONING_ENVIRONMENT_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+
+#: The one file permitted to read them, and to reach ``os.environ`` at all from
+#: the Phase 7 layers. Scoped deliberately: ``src/news/config.py`` and
+#: ``src/data/providers/alpaca.py`` read the environment too, legitimately, from
+#: the domain packages this rule does not cover.
+ENVIRONMENT_EXEMPTIONS = frozenset({"reasoning_composition.py"})
+
+
+def string_constants(path: pathlib.Path) -> set[str]:
+    """String *literals*, not identifiers.
+
+    ``src/application/__init__.py`` re-exports ``ANTHROPIC_API_KEY_VAR`` and
+    names it in ``__all__``; that is the constant's name travelling, not the
+    variable being read. Matching on equality against literals keeps the two
+    apart, where a substring search over raw text would report the package
+    ``__init__`` as an environment reader.
+    """
+    tree = ast.parse(path.read_text(), filename=str(path))
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+
+@pytest.mark.parametrize("variable", REASONING_ENVIRONMENT_VARS)
+def test_one_file_owns_each_reasoning_environment_variable(variable):
+    readers = sorted(
+        path.name
+        for path in DASHBOARD_FILES + APPLICATION_FILES
+        if variable in string_constants(path)
+    )
+    assert readers == ["reasoning_composition.py"], (
+        f"{variable} is named in {readers}; exactly one file may own it"
+    )
+
+
+@pytest.mark.parametrize("variable", REASONING_ENVIRONMENT_VARS)
+def test_the_environment_exemption_is_exercised(variable):
+    """Asserted as used, for the same reason the vendor exemption is."""
+    owner = SRC / "application" / "reasoning_composition.py"
+    assert variable in string_constants(owner)
+
+
+def reaches_process_environment(path: pathlib.Path) -> bool:
+    """Whether this file reads the *process* environment.
+
+    Deliberately narrow. ``src/application/news.py`` takes an ``environ``
+    mapping as a parameter and passes it along -- that is injection, and it is
+    the pattern this repository wants -- so a rule that flagged the bare name
+    ``environ`` would report the well-behaved file and teach the next author to
+    stop injecting. What is detected here is ``os.environ`` and ``os.getenv``
+    specifically: the ambient source that cannot be substituted in a test.
+    """
+    tree = ast.parse(path.read_text(), filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        if node.attr not in {"environ", "getenv"}:
+            continue
+        if isinstance(node.value, ast.Name) and node.value.id == "os":
+            return True
+    return False
+
+
+@pytest.mark.parametrize("path", DASHBOARD_FILES + APPLICATION_FILES, ids=lambda p: p.name)
+def test_only_the_composition_module_reaches_the_process_environment(path):
+    """No second source, hidden or otherwise.
+
+    ``dotenv`` is refused alongside it, because a loader would put a *file*
+    behind the same variable names and make "read from the environment" quietly
+    untrue -- the injected mapping would stop being the whole story.
+    """
+    names = imported_modules(path)
+    assert not imports_package(names, "dotenv"), f"{path.name} imports dotenv"
+    if path.name in ENVIRONMENT_EXEMPTIONS:
+        assert reaches_process_environment(path), (
+            f"{path.name} is exempted but no longer reads the environment"
+        )
+        return
+    assert not reaches_process_environment(path), (
+        f"{path.name} reads the process environment directly"
+    )
 
 
 @pytest.mark.parametrize("path", DASHBOARD_FILES + APPLICATION_FILES, ids=lambda p: p.name)

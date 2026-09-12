@@ -20,6 +20,12 @@ from .reasoning import (
     ReasoningService,
     ReasoningUnavailable,
 )
+from .reasoning_composition import (
+    ANTHROPIC_API_KEY_VAR,
+    ANTHROPIC_MODEL_VAR,
+    build_reasoning_service,
+    describe_reasoning_configuration,
+)
 from .paper import (
     DEFAULT_RISK_POLICY,
     PaperSession,
@@ -50,6 +56,10 @@ __all__ = [
     "ReasoningAvailability",
     "ReasoningService",
     "ReasoningUnavailable",
+    "ANTHROPIC_API_KEY_VAR",
+    "ANTHROPIC_MODEL_VAR",
+    "build_reasoning_service",
+    "describe_reasoning_configuration",
     "FailureKind",
     "FailureReport",
     "classify",
