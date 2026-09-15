@@ -1,10 +1,12 @@
-"""Phase 12A architecture, enforced by import and call analysis.
+"""Phase 12A/12B architecture, enforced by import and call analysis.
 
-``src.outcomes`` is a pure domain package: models and identity, nothing else.
-It reaches only the Phase 1/3/4/6 record types it describes, and nothing
-reaches it yet -- the ledger, the application service and the dashboard hook
-are later stages, and the dependency direction (evaluation consumes
-assessments, never the reverse) is pinned here so it cannot quietly flip.
+``src.outcomes`` is a pure domain package: models, identity and -- since
+12B -- the tracking integration that asks Phase 4 to measure. It reaches
+only the Phase 1/3/4/6 record types it describes and the Phase 4 public
+measurement API, and nothing reaches it yet -- the ledger, the application
+service and the dashboard hook are later stages. The dependency direction
+(outcomes consume evaluation, never the reverse) is pinned here so it cannot
+quietly flip.
 """
 
 from __future__ import annotations
@@ -65,16 +67,16 @@ def attribute_names(path: pathlib.Path) -> set[str]:
     return {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
 
 
-# -- the package exists with exactly the 12A shape ------------------------------
+# -- the package exists with exactly the 12B shape ------------------------------
 
 
-def test_the_12a_package_has_exactly_three_modules():
+def test_the_12b_package_has_exactly_four_modules():
     names = sorted(p.name for p in OUTCOME_FILES)
-    assert names == ["__init__.py", "identity.py", "models.py"], names
+    assert names == ["__init__.py", "identity.py", "models.py", "tracking.py"], names
 
 
 def test_later_stage_modules_do_not_exist_yet():
-    for later in ("tracking.py", "ports.py", "store.py", "summary.py"):
+    for later in ("ports.py", "store.py", "summary.py"):
         assert not (OUTCOMES / later).exists(), later
 
 
@@ -82,13 +84,13 @@ def test_later_stage_modules_do_not_exist_yet():
 
 
 ALLOWED_PREFIXES = (
-    "src.data", "src.strategies", "src.assessments", "src.evaluation.outcome",
+    "src.data", "src.strategies", "src.assessments", "src.evaluation",
 )
 
 FORBIDDEN_PACKAGES = (
     "src.application", "src.dashboard", "src.portfolio", "src.reasoning",
     "src.scanner", "src.news", "src.feeds", "src.features", "src.backtesting",
-    "src.signals", "src.evaluation.evaluate", "src.evaluation.metrics",
+    "src.signals", "src.evaluation.metrics",
 )
 
 FORBIDDEN_MODULES = (
@@ -119,6 +121,45 @@ def test_no_forbidden_layer_is_imported(package):
 def test_no_io_network_clock_or_vendor_module_is_imported(module):
     for path in OUTCOME_FILES:
         assert not imports_package(imported(path), module), f"{path.name} imports {module}"
+
+
+def test_only_tracking_consumes_phase_four_and_only_its_public_api():
+    """The domain records (12A) stay measurement-free; the integration module
+    is the one place Phase 4 is asked anything, and it asks through
+    ``src.evaluation``'s public surface, never a submodule or a private name."""
+    for path in OUTCOME_FILES:
+        phase_four = {n for n in imported(path) if imports_package({n}, "src.evaluation")}
+        if path.name == "tracking.py":
+            assert phase_four == {"src.evaluation"}, phase_four
+        else:
+            assert not phase_four, f"{path.name} imports {phase_four}"
+
+    tree = ast.parse(source(OUTCOMES / "tracking.py"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "src.evaluation":
+            names = {alias.name for alias in node.names}
+            assert not any(name.startswith("_") for name in names), names
+            evaluation = importlib.import_module("src.evaluation")
+            assert names <= set(evaluation.__all__), names - set(evaluation.__all__)
+
+
+def test_no_forward_return_arithmetic_outside_phase_four():
+    """Phase 4 is the measurement authority. ``tracking.py`` must never
+    divide, subtract or multiply anything, and must never read a price off a
+    bar: every number it stores is read off a ``ForwardMeasurement``."""
+    tree = ast.parse(source(OUTCOMES / "tracking.py"))
+    arithmetic = [n for n in ast.walk(tree) if isinstance(n, ast.BinOp)
+                  and isinstance(n.op, (ast.Div, ast.FloorDiv, ast.Sub, ast.Mult, ast.Pow, ast.Add))]
+    assert not arithmetic, [ast.dump(n) for n in arithmetic]
+    price_reads = [n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+                   and n.attr in {"open", "high", "low", "close", "volume"}]
+    assert not price_reads, price_reads
+    # ...and no dynamic route around the static check. Prices reach this
+    # module only through ``bar_fingerprint``/``bars_fingerprint`` (identity)
+    # and ``ForwardMeasurement`` (Phase 4).
+    dynamic = called_names(OUTCOMES / "tracking.py") & {"getattr", "vars", "astuple", "asdict"}
+    assert not dynamic, dynamic
+    assert "__dict__" not in attribute_names(OUTCOMES / "tracking.py")
 
 
 def test_no_vendor_or_framework_name_appears_at_all():
@@ -176,7 +217,7 @@ def test_no_python_hash_is_used_for_identity():
 
 
 def test_no_production_module_imports_outcomes_yet():
-    """12A is unconsumed. The ledger (12C), the application service (12D)
+    """12B is unconsumed. The ledger (12C), the application service (12D)
     and the dashboard hook are later gates; a consumer appearing now would be
     scope creep."""
     consumers = [
@@ -203,19 +244,28 @@ def test_no_upstream_layer_can_ever_see_outcomes(package):
 
 
 EXPECTED_PUBLIC = {
+    # 12A
     "ArtifactKind", "ArtifactOrigin", "TrackedArtifact", "ObservationArtifact",
     "AssessmentArtifact", "OutcomeRecord", "OutcomeTrackingError",
     "EVALUATION_VERSION", "SUPPORTED_EVALUATION_VERSIONS",
     "observation_artifact_key", "assessment_artifact_key", "outcome_key",
     "bar_fingerprint", "bars_fingerprint",
+    # 12B
+    "TrackingStatus", "RefusalReason", "TrackingResult", "evaluate_artifact",
 }
 
 
-def test_public_api_is_exactly_the_12a_surface():
+def test_public_api_is_exactly_the_12b_surface():
     module = importlib.import_module("src.outcomes")
     assert set(module.__all__) == EXPECTED_PUBLIC
     for name in EXPECTED_PUBLIC:
         assert hasattr(module, name), name
+
+
+def test_tracking_exports_exactly_its_public_names():
+    module = importlib.import_module("src.outcomes.tracking")
+    assert set(module.__all__) == {"TrackingStatus", "RefusalReason", "TrackingResult",
+                                   "evaluate_artifact"}
 
 
 def test_every_module_imports_cleanly():

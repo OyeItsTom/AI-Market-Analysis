@@ -10,6 +10,11 @@ same key on every machine, forever.
     ResearchObservation / ResearchAssessment  ->  TrackedArtifact
     TrackedArtifact + Phase 4 measurement     ->  OutcomeRecord
 
+:func:`evaluate_artifact` performs that second step: given an artifact, a
+series of settled bars, an outcome specification and an explicit evaluation
+clock, it asks Phase 4 to measure the market point and returns either one
+:class:`OutcomeRecord` or a deterministic reason there is none.
+
 Nothing here predicts, recommends, scores, trades, or reads a clock, a file
 or a network. A forward return is a property of the market, not of a
 strategy, and **historical outcomes do not establish future profitability.**
@@ -33,6 +38,7 @@ from .models import (
     OutcomeRecord,
     TrackedArtifact,
 )
+from .tracking import RefusalReason, TrackingResult, TrackingStatus, evaluate_artifact
 
 __all__ = [
     "ArtifactKind",
@@ -49,4 +55,8 @@ __all__ = [
     "outcome_key",
     "bar_fingerprint",
     "bars_fingerprint",
+    "TrackingStatus",
+    "RefusalReason",
+    "TrackingResult",
+    "evaluate_artifact",
 ]
