@@ -1,13 +1,15 @@
-"""Phase 12A/12B/12C architecture, enforced by import and call analysis.
+"""Phase 12A/12B/12C/12D architecture, enforced by import and call analysis.
 
 ``src.outcomes`` is a domain package with one filesystem adapter at its
 edge: models, identity, the tracking integration that asks Phase 4 to
 measure (12B), the persistence port (12C, pure) and the JSONL ledger (12C,
 the only module allowed to touch a file). It reaches only the Phase 1/3/4/6
-record types it describes and the Phase 4 public measurement API, and
-nothing reaches it yet -- the application service and the dashboard hook
-are later stages. The dependency direction (outcomes consume evaluation,
-never the reverse) is pinned here so it cannot quietly flip.
+record types it describes and the Phase 4 public measurement API. Exactly
+one production module consumes it -- the 12D application orchestration,
+``src/application/outcomes.py`` -- and the dashboard reaches outcomes only
+through that module, never through the package. The dependency direction
+(outcomes consume evaluation, never the reverse) is pinned here so it
+cannot quietly flip.
 """
 
 from __future__ import annotations
@@ -83,10 +85,17 @@ def test_the_12c_package_has_exactly_six_modules():
                      "tracking.py"], names
 
 
-def test_later_stage_modules_do_not_exist_yet():
-    """Aggregation (12E) and the application service (12D) are later gates."""
+#: The one production consumer of ``src.outcomes``: 12D orchestration.
+APPLICATION_OUTCOMES = SRC / "application" / "outcomes.py"
+
+
+def test_the_application_orchestration_exists_and_aggregation_does_not():
+    """12D is in; aggregation (12E) and outcome-aware reasoning (11B) are
+    later gates, and no module for either may appear before its gate."""
+    assert APPLICATION_OUTCOMES.exists()
     assert not (OUTCOMES / "summary.py").exists()
-    assert not (SRC / "application" / "outcomes.py").exists()
+    assert not (SRC / "application" / "outcome_summary.py").exists()
+    assert not (SRC / "reasoning" / "outcomes.py").exists()
 
 
 # -- what it may and may not import ----------------------------------------------
@@ -281,9 +290,10 @@ def test_no_python_hash_is_used_for_identity():
 # -- nothing consumes it yet, and the direction is pinned ---------------------------------
 
 
-def test_no_production_module_imports_outcomes_yet():
-    """12C is unconsumed. The application service (12D) and the dashboard
-    hook are later gates; a consumer appearing now would be scope creep."""
+def test_only_the_application_orchestration_consumes_outcomes():
+    """One consumer, by name. The 12D application module is the only
+    production code that may register, evaluate or read through the ledger;
+    the dashboard reaches outcomes through its API, and nothing else does."""
     consumers = [
         path.relative_to(SRC).as_posix()
         for path in sorted(SRC.rglob("*.py"))
@@ -291,7 +301,26 @@ def test_no_production_module_imports_outcomes_yet():
         and "outcomes" not in path.parts
         and imports_package(imported(path), "src.outcomes")
     ]
-    assert consumers == [], consumers
+    assert consumers == ["application/outcomes.py"], consumers
+
+
+def test_the_dashboard_never_reaches_outcomes_directly():
+    for path in sorted((SRC / "dashboard").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        names = imported(path)
+        assert not imports_package(names, "src.outcomes"), path.name
+        text = source(path)
+        for word in ("JsonlOutcomeLedger", "artifacts.jsonl", "outcomes.jsonl",
+                     "data/outcomes", "register_artifact", "append_outcome",
+                     "evaluate_artifact", "artifact_key", "outcome_key", "SCHEMA_VERSION"):
+            assert word not in text, f"{path.name} mentions {word}"
+
+
+def test_the_orchestration_uses_the_package_surface_not_the_store_module():
+    names = imported(APPLICATION_OUTCOMES)
+    assert "src.outcomes" in names
+    assert not [n for n in names if n.startswith("src.outcomes.")], names
 
 
 @pytest.mark.parametrize("package", ["assessments", "strategies", "evaluation", "portfolio",

@@ -150,3 +150,24 @@ def make_observations(series, states, *, hypothesis_id="test_hypothesis",
         )
         for bar, state in zip(series.bars, states)
     )
+
+
+# --------------------------------------------------------------------------
+# Phase 12D guard
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _outcome_ledger_root_is_temporary(tmp_path, monkeypatch):
+    """No test may write into the repository's ``data/outcomes``.
+
+    The dashboard composes its ledger at the application default root when
+    nothing is injected. The Phase 12D dashboard tests seed a ledger over a
+    temporary root explicitly; every other suite that presses Refresh composes
+    at the default, which this redirects into the test's own ``tmp_path`` --
+    so no suite, present or future, can leave a real-looking ledger line
+    under the repository.
+    """
+    import src.application.outcomes as outcomes
+
+    monkeypatch.setattr(outcomes, "DEFAULT_OUTCOMES_ROOT", tmp_path / "outcomes-default")

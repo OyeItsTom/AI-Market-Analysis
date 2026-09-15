@@ -828,6 +828,7 @@ EXPECTED_SESSION = {
     "scan_snapshot", "scan_failure", "scan_universes",
     "scan_universe_id", "pending_research_symbol",
     "reasoning_service", "reasoning_snapshot", "reasoning_failure",
+    "outcome_ledger", "outcome_result", "outcome_failure",
 }
 
 
@@ -860,8 +861,11 @@ def test_the_session_pin_matches_the_boundaries_allowlist_exactly():
     assert pinned == allowed == EXPECTED_SESSION
     reasoning_keys = {k for k in pinned if "reasoning" in k}
     assert reasoning_keys == {"reasoning_service", "reasoning_snapshot", "reasoning_failure"}
+    outcome_keys = {k for k in pinned if "outcome" in k}
+    assert outcome_keys == {"outcome_ledger", "outcome_result", "outcome_failure"}
     for fragment in ("client", "api_key", "credential", "raw_response",
-                     "request", "packet", "exception", "payload"):
+                     "request", "packet", "exception", "payload",
+                     "artifact", "record", "key", "path", "queue"):
         assert not [k for k in pinned if fragment in k], fragment
 
 
@@ -905,3 +909,27 @@ def test_the_explain_control_is_not_a_paper_or_trading_control():
         assert forbidden not in BUTTON
     app = refreshed(start())
     assert explain_button(app).label == "Explain with AI"
+
+
+# -- Phase 12D: the explanation action never reaches the outcome ledger ---------
+
+
+def test_explaining_with_ai_does_not_track_outcomes(tmp_path):
+    from src.application.outcomes import build_outcome_ledger
+    from tests.test_dashboard_smoke import CountingLedger
+
+    ledger = CountingLedger(build_outcome_ledger(tmp_path / "outcomes"))
+    app = AppTest.from_file(APP, default_timeout=60)
+    app.session_state["provider"] = RecordingProvider(120)
+    app.session_state["clock"] = clock
+    app.session_state["reasoning_service"] = FakeReasoningService()
+    app.session_state["outcome_ledger"] = ledger
+    app.run()
+    app = refreshed(app)
+    before = list(ledger.calls)
+    assert before.count("iter_artifacts") == 1
+    app = press(app, BUTTON)
+    assert not app.exception, app.exception
+    assert len(service_of(app).explain_calls) == 1
+    assert ledger.calls == before
+    assert app.session_state["outcome_result"] is not None

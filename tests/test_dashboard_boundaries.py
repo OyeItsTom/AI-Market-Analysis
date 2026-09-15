@@ -736,6 +736,13 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
     # ReasoningFailureView. Listed individually for the same reason: a key such
     # as reasoning_claims, reasoning_response or reasoning_request would be a
     # piece of a result -- or worse, an unvalidated one -- and must still fail.
+    # The outcome_* keys are the Phase 12D additions and hold the same three
+    # shapes: outcome_ledger is the composed OutcomeLedger dependency, retained
+    # for the session; outcome_result one whole OutcomeRefreshResult from the
+    # current snapshot's refresh; outcome_failure one sanitized failure string.
+    # Listed individually for the same reason: a key such as outcome_items,
+    # outcome_artifacts or outcome_pending would be a piece of a result and
+    # must still fail here.
     assert assigned <= {
         "snapshot", "failure", "paper", "paper_error", "provider", "clock",
         "news_snapshot", "news_service", "news_failure",
@@ -743,6 +750,7 @@ def test_the_dashboard_holds_only_whole_snapshots_between_runs():
         "scan_snapshot", "scan_failure", "scan_universes",
         "scan_universe_id", "pending_research_symbol",
         "reasoning_service", "reasoning_snapshot", "reasoning_failure",
+        "outcome_ledger", "outcome_result", "outcome_failure",
     }
     for forbidden in ("observations", "assessment", "features", "series"):
         assert forbidden not in assigned

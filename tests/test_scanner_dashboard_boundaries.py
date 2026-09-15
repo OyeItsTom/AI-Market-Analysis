@@ -319,6 +319,11 @@ def test_the_legacy_session_allowlist_is_exactly_this():
         # reasoning_failure one whole safe ReasoningFailureView. No client,
         # credential, request, packet, raw response or exception has a key.
         "reasoning_service", "reasoning_snapshot", "reasoning_failure",
+        # Phase 12D, the same three shapes once more: outcome_ledger is the
+        # composed ledger dependency retained for the session, outcome_result
+        # one whole OutcomeRefreshResult, outcome_failure one sanitized
+        # failure string. No artifact, outcome record, key or path has a key.
+        "outcome_ledger", "outcome_result", "outcome_failure",
     }, "the session-state allowlist was widened"
 
 
