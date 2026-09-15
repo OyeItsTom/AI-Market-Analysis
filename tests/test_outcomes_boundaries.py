@@ -1,9 +1,11 @@
-"""Phase 12A/12B/12C/12D architecture, enforced by import and call analysis.
+"""Phase 12A-12E architecture, enforced by import and call analysis.
 
 ``src.outcomes`` is a domain package with one filesystem adapter at its
 edge: models, identity, the tracking integration that asks Phase 4 to
-measure (12B), the persistence port (12C, pure) and the JSONL ledger (12C,
-the only module allowed to touch a file). It reaches only the Phase 1/3/4/6
+measure (12B), the persistence port (12C, pure), the JSONL ledger (12C,
+the only module allowed to touch a file) and the descriptive summary that
+reads a partition back through the port (12E, pure, read-only). It reaches
+only the Phase 1/3/4/6
 record types it describes and the Phase 4 public measurement API. Exactly
 one production module consumes it -- the 12D application orchestration,
 ``src/application/outcomes.py`` -- and the dashboard reaches outcomes only
@@ -79,23 +81,36 @@ PURE_FILES = [p for p in OUTCOME_FILES if p != STORE]
 # -- the package exists with exactly the 12C shape ------------------------------
 
 
-def test_the_12c_package_has_exactly_six_modules():
+def test_the_phase_12_package_has_exactly_seven_modules():
     names = sorted(p.name for p in OUTCOME_FILES)
     assert names == ["__init__.py", "identity.py", "models.py", "ports.py", "store.py",
-                     "tracking.py"], names
+                     "summary.py", "tracking.py"], names
 
 
 #: The one production consumer of ``src.outcomes``: 12D orchestration.
 APPLICATION_OUTCOMES = SRC / "application" / "outcomes.py"
 
 
-def test_the_application_orchestration_exists_and_aggregation_does_not():
-    """12D is in; aggregation (12E) and outcome-aware reasoning (11B) are
-    later gates, and no module for either may appear before its gate."""
+#: The 12E summary: pure, read-only, the only module that aggregates.
+SUMMARY = OUTCOMES / "summary.py"
+
+
+def test_the_stage_boundary_is_12e():
+    """12D orchestration and 12E summary are in. Error analysis (Phase 13),
+    outcome-aware reasoning (11B), an application-level summary and any
+    monitoring are later gates, and no module for them may appear before
+    its gate."""
     assert APPLICATION_OUTCOMES.exists()
-    assert not (OUTCOMES / "summary.py").exists()
-    assert not (SRC / "application" / "outcome_summary.py").exists()
-    assert not (SRC / "reasoning" / "outcomes.py").exists()
+    assert SUMMARY.exists()
+    for later in (
+        OUTCOMES / "analysis.py", OUTCOMES / "errors.py", OUTCOMES / "monitoring.py",
+        SRC / "application" / "outcome_summary.py",
+        SRC / "application" / "outcome_analysis.py",
+        SRC / "application" / "monitoring.py",
+        SRC / "reasoning" / "outcomes.py",
+        SRC / "monitoring",
+    ):
+        assert not later.exists(), later
 
 
 # -- what it may and may not import ----------------------------------------------
@@ -160,24 +175,29 @@ def test_the_port_is_pure():
     assert not imported(OUTCOMES / "ports.py") & (set(FORBIDDEN_MODULES) | {"json", "hashlib"})
 
 
-def test_only_tracking_consumes_phase_four_and_only_its_public_api():
-    """The domain records (12A) stay measurement-free; the integration module
-    is the one place Phase 4 is asked anything, and it asks through
-    ``src.evaluation``'s public surface, never a submodule or a private name."""
+def test_only_tracking_and_summary_see_phase_four_and_only_its_public_api():
+    """The domain records (12A) stay measurement-free. The integration module
+    is the one place Phase 4 is asked to *measure*; the summary (12E) sees
+    Phase 4 only to name the specification it reports under. Both ask
+    through ``src.evaluation``'s public surface, never a submodule or a
+    private name."""
     for path in OUTCOME_FILES:
         phase_four = {n for n in imported(path) if imports_package({n}, "src.evaluation")}
-        if path.name == "tracking.py":
+        if path.name in ("tracking.py", "summary.py"):
             assert phase_four == {"src.evaluation"}, phase_four
         else:
             assert not phase_four, f"{path.name} imports {phase_four}"
 
-    tree = ast.parse(source(OUTCOMES / "tracking.py"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "src.evaluation":
-            names = {alias.name for alias in node.names}
-            assert not any(name.startswith("_") for name in names), names
-            evaluation = importlib.import_module("src.evaluation")
-            assert names <= set(evaluation.__all__), names - set(evaluation.__all__)
+    evaluation = importlib.import_module("src.evaluation")
+    for path in (OUTCOMES / "tracking.py", SUMMARY):
+        tree = ast.parse(source(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "src.evaluation":
+                names = {alias.name for alias in node.names}
+                assert not any(name.startswith("_") for name in names), names
+                assert names <= set(evaluation.__all__), names - set(evaluation.__all__)
+                if path == SUMMARY:
+                    assert names == {"OutcomeSpec"}, names
 
 
 def test_no_forward_return_arithmetic_outside_phase_four():
@@ -350,10 +370,16 @@ EXPECTED_PUBLIC = {
     "UnregisteredArtifactError", "ArtifactMismatchError",
     "WriteStatus", "WriteResult", "LedgerPartition",
     "OutcomeReader", "OutcomeLedger", "JsonlOutcomeLedger",
+    # 12E -- the group-key types stay module-public (``src.outcomes.summary``)
+    # and off the package surface: consumers read keys off groups, never
+    # construct them.
+    "MIN_SUMMARY_SAMPLES", "OVERLAP_CAVEAT", "OutcomeSummaryError",
+    "ProducerKey", "OutcomeCoverageGroup", "OutcomeMetricGroup", "OutcomeSummary",
+    "summarize_outcomes",
 }
 
 
-def test_public_api_is_exactly_the_12c_surface():
+def test_public_api_is_exactly_the_phase_12_surface():
     module = importlib.import_module("src.outcomes")
     assert set(module.__all__) == EXPECTED_PUBLIC
     for name in EXPECTED_PUBLIC:
@@ -386,6 +412,95 @@ def test_store_exports_the_adapter_and_its_schema_constants_only():
     assert module.SCHEMA_VERSION == 1
     package = importlib.import_module("src.outcomes")
     assert not hasattr(package, "SCHEMA_VERSION"), "schema version is the store's, not the domain's"
+
+
+def test_summary_exports_exactly_its_public_names():
+    module = importlib.import_module("src.outcomes.summary")
+    assert set(module.__all__) == {
+        "MIN_SUMMARY_SAMPLES", "OVERLAP_CAVEAT", "OutcomeSummaryError",
+        "ProducerKey", "CoverageGroupKey", "MetricGroupKey",
+        "OutcomeCoverageGroup", "OutcomeMetricGroup", "OutcomeSummary",
+        "summarize_outcomes",
+    }
+    assert module.MIN_SUMMARY_SAMPLES == 20
+    package = importlib.import_module("src.outcomes")
+    assert not hasattr(package, "CoverageGroupKey") and not hasattr(package, "MetricGroupKey")
+
+
+# -- the summary is a pure, read-only, descriptive reader --------------------------------
+
+
+def test_the_summary_never_writes_and_never_names_a_ledger():
+    """12E reads through ``OutcomeReader`` only. It must not call either
+    write, must not import the ledger protocol or the adapter, and must
+    not reach for a record by key (one pass over each iterator)."""
+    assert not called_names(SUMMARY) & {
+        "register_artifact", "append_outcome", "get_artifact", "get_outcome",
+        "contains_artifact", "contains_outcome",
+    }
+    tree = ast.parse(source(SUMMARY))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            names = {alias.name for alias in node.names}
+            assert not names & {"OutcomeLedger", "JsonlOutcomeLedger"}, names
+            assert node.module not in ("store", "src.outcomes.store"), node.module
+    for name in ("iter_artifacts", "iter_outcomes"):
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == name]
+        assert len(calls) == 1, f"{name} must be called exactly once"
+
+
+def test_the_summary_reads_no_price_and_recomputes_no_return():
+    """The only number read off a record is ``forward_return``; prices,
+    bars and every arithmetic operator except counting are absent. The one
+    division is the coverage fraction, in its own named helper."""
+    tree = ast.parse(source(SUMMARY))
+    assert not attribute_names(SUMMARY) & {
+        "open", "high", "low", "close", "volume", "reference_price", "future_price",
+        "bars", "series", "measurement",
+    }
+    operators = {type(n.op).__name__ for n in ast.walk(tree) if isinstance(n, ast.BinOp)}
+    assert operators <= {"Add", "Div", "BitOr"}, operators   # BitOr: ``X | None`` annotations
+    divisions = [
+        function.name for function in ast.walk(tree)
+        if isinstance(function, ast.FunctionDef)
+        and any(isinstance(n, ast.BinOp) and isinstance(n.op, ast.Div) for n in ast.walk(function))
+    ]
+    assert divisions == ["_fraction"], divisions
+    assert not called_names(SUMMARY) & {
+        "measure_forward", "evaluate_artifact", "getattr", "vars", "astuple", "asdict",
+        "digest", "sha256", "canonical_bytes", "bar_fingerprint", "bars_fingerprint",
+    }
+    assert "__dict__" not in attribute_names(SUMMARY)
+
+
+def test_the_summary_exposes_no_ranking_or_inference():
+    """No hit rate, score, rank, best-anything or significance -- not as a
+    field, a property or a method on any public result type."""
+    module = importlib.import_module("src.outcomes.summary")
+    forbidden = ("rate", "score", "rank", "best", "overall", "accuracy", "sharpe",
+                 "sortino", "alpha", "beta", "confidence", "pvalue", "p_value",
+                 "significan", "probability", "win", "hit", "leaderboard", "profit",
+                 "sufficien", "power")
+    for name in module.__all__:
+        obj = getattr(module, name)
+        if not isinstance(obj, type):
+            continue
+        members = {m for m in dir(obj) if not m.startswith("_")}
+        members |= {f.name for f in getattr(obj, "__dataclass_fields__", {}).values()}
+        for member in members:
+            for word in forbidden:
+                assert word not in member.lower(), f"{name}.{member} suggests {word!r}"
+    assert not imports_package(imported(SUMMARY), "statistics.stdev")
+    assert not called_names(SUMMARY) & {"stdev", "pstdev", "variance", "pvariance",
+                                         "NormalDist", "correlation", "linear_regression"}
+
+
+def test_the_summary_carries_the_overlap_caveat():
+    module = importlib.import_module("src.outcomes.summary")
+    assert module.OutcomeSummary.overlap_caveat == module.OVERLAP_CAVEAT
+    assert "overlapping forward windows" in module.OVERLAP_CAVEAT
+    assert "not independent statistical trials" in module.OVERLAP_CAVEAT
 
 
 def test_domain_models_carry_no_schema_version():

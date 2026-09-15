@@ -21,6 +21,12 @@ by key) and :mod:`src.outcomes.store` implements it as an append-only local
 JSONL ledger. The domain records know nothing about disk; the store owns
 its own schema version and refuses bytes it cannot vouch for.
 
+:mod:`src.outcomes.summary` reads a ledger back through the reader port and
+produces one partition's deterministic, descriptive aggregates -- counts,
+coverage and plain statistics of ``forward_return`` per producer, state,
+source, specification and evaluation version. It ranks nothing, pools
+nothing across producers and infers nothing.
+
 Nothing here predicts, recommends, scores or trades, and nothing outside
 the store reads a clock, a file or a network. A forward return is a
 property of the market, not of a strategy, and **historical outcomes do
@@ -58,6 +64,16 @@ from .ports import (
     WriteStatus,
 )
 from .store import JsonlOutcomeLedger
+from .summary import (
+    MIN_SUMMARY_SAMPLES,
+    OVERLAP_CAVEAT,
+    OutcomeCoverageGroup,
+    OutcomeMetricGroup,
+    OutcomeSummary,
+    OutcomeSummaryError,
+    ProducerKey,
+    summarize_outcomes,
+)
 from .tracking import RefusalReason, TrackingResult, TrackingStatus, evaluate_artifact
 
 __all__ = [
@@ -90,4 +106,12 @@ __all__ = [
     "OutcomeReader",
     "OutcomeLedger",
     "JsonlOutcomeLedger",
+    "MIN_SUMMARY_SAMPLES",
+    "OVERLAP_CAVEAT",
+    "OutcomeSummaryError",
+    "ProducerKey",
+    "OutcomeCoverageGroup",
+    "OutcomeMetricGroup",
+    "OutcomeSummary",
+    "summarize_outcomes",
 ]
