@@ -15,9 +15,16 @@ series of settled bars, an outcome specification and an explicit evaluation
 clock, it asks Phase 4 to measure the market point and returns either one
 :class:`OutcomeRecord` or a deterministic reason there is none.
 
-Nothing here predicts, recommends, scores, trades, or reads a clock, a file
-or a network. A forward return is a property of the market, not of a
-strategy, and **historical outcomes do not establish future profitability.**
+:mod:`src.outcomes.ports` says what a *ledger* of those records must do
+(register an artifact, append an outcome, read either back, all idempotent
+by key) and :mod:`src.outcomes.store` implements it as an append-only local
+JSONL ledger. The domain records know nothing about disk; the store owns
+its own schema version and refuses bytes it cannot vouch for.
+
+Nothing here predicts, recommends, scores or trades, and nothing outside
+the store reads a clock, a file or a network. A forward return is a
+property of the market, not of a strategy, and **historical outcomes do
+not establish future profitability.**
 """
 
 from .identity import (
@@ -38,6 +45,19 @@ from .models import (
     OutcomeRecord,
     TrackedArtifact,
 )
+from .ports import (
+    ArtifactMismatchError,
+    LedgerCorruption,
+    LedgerError,
+    LedgerPartition,
+    OutcomeLedger,
+    OutcomeReader,
+    UnregisteredArtifactError,
+    UnsupportedSchemaError,
+    WriteResult,
+    WriteStatus,
+)
+from .store import JsonlOutcomeLedger
 from .tracking import RefusalReason, TrackingResult, TrackingStatus, evaluate_artifact
 
 __all__ = [
@@ -59,4 +79,15 @@ __all__ = [
     "RefusalReason",
     "TrackingResult",
     "evaluate_artifact",
+    "LedgerError",
+    "LedgerCorruption",
+    "UnsupportedSchemaError",
+    "UnregisteredArtifactError",
+    "ArtifactMismatchError",
+    "WriteStatus",
+    "WriteResult",
+    "LedgerPartition",
+    "OutcomeReader",
+    "OutcomeLedger",
+    "JsonlOutcomeLedger",
 ]
