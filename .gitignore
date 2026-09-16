@@ -39,6 +39,11 @@ data/feeds/
 # and what the market did afterwards. Local research state, never committed.
 data/outcomes/
 
+# Generated Phase R study runs (manifest, summaries, the raw observations
+# export). Reproducible from a committed methodology; the small tracked
+# copies live under docs/research/, never here.
+data/research/
+
 # Your own feed list. Ignored because it names the sites this machine will
 # fetch, which is local configuration rather than project code. The committed
 # config/external_feeds.example.json shows the format.

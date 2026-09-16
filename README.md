@@ -27,6 +27,8 @@ and **paper-analysis** platform.
 implemented (12A–12F).**
 **Phase 12G — Headless outcome collection (`python -m src.cli.outcome_refresh`):
 implemented.**
+**Phase R — Baseline Study v1 (`python -m src.cli.baseline_study`): methodology
+implemented and frozen; no result generated yet.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -131,6 +133,17 @@ run in the background; an operator's scheduler (launchd on macOS) invokes it.
 Repeating an identical run is safe: the ledger reports the same claims as
 duplicates and writes nothing. The ledger is local, and nothing trades.
 
+Phase R is the first benchmarked **retrospective** study: the three existing
+hypotheses, unchanged, over a fixed universe (SPY, QQQ, IWM, TLT, GLD) and a
+fixed decade (observations 2015-01-01 through 2024-12-31, daily RAW bars),
+described beside a matched unconditional benchmark at the Phase 12 horizons.
+The methodology is frozen in code and fingerprinted before any real-data run;
+the command takes only `--git-commit` and `--out`. It computes descriptive
+counts, means, medians, extremes and deltas over overlapping, non-independent
+samples — no hit rate, no significance, no profitability. See
+**[docs/research_baseline_study.md](docs/research_baseline_study.md)** and
+**[ADR 0011](docs/adr/0011-first-benchmarked-retrospective-study.md)**.
+
 ## Target architecture
 
 ```
@@ -192,6 +205,12 @@ src/outcomes/            prospective outcome tracking (append-only, no scoring)
 ├── store.py             JsonlOutcomeLedger — data/outcomes/<sym>/<interval>/<basis>/
 └── summary.py           summarize_outcomes — descriptive per-partition aggregates
 
+src/research/            Phase R baseline study (frozen definition, engine, renderers)
+├── definition.py        StudyDefinition + BASELINE_STUDY_V1 + study fingerprint
+├── study.py             windows, batch evaluation, matched benchmark, descriptive groups
+├── render.py            manifest / summary.csv / observations.csv / report.md
+└── artifacts.py         the one place Phase R writes files (never overwrites a run)
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -213,6 +232,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/scanner.md](docs/scanner.md)** (Phase 10),
 **[docs/reasoning.md](docs/reasoning.md)** (Phase 11A),
 **[docs/outcomes.md](docs/outcomes.md)** (Phase 12),
+**[docs/research_baseline_study.md](docs/research_baseline_study.md)** (Phase R),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -224,7 +244,9 @@ announcements), **[ADR 0007](docs/adr/0007-external-feeds.md)** (external
 feeds), **[ADR 0008](docs/adr/0008-market-scanner.md)** (market universe and
 scanner), **[ADR 0009](docs/adr/0009-grounded-reasoning.md)** (grounded AI
 explanation), **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**
-(prospective outcome tracking and deterministic aggregation).
+(prospective outcome tracking and deterministic aggregation),
+**[ADR 0011](docs/adr/0011-first-benchmarked-retrospective-study.md)** (first
+benchmarked retrospective study).
 
 ### The core idea
 
@@ -270,6 +292,17 @@ python -m src.cli.outcome_refresh SPY QQQ --interval 1d   # in this order, exit 
 It writes to the same local `data/outcomes/` ledger the dashboard uses (or
 `--outcome-root PATH`), is safe to repeat, and never trades. See
 [docs/outcomes.md](docs/outcomes.md#headless-collection-12g).
+
+Baseline Study v1 (Phase R), one frozen run from a committed methodology:
+
+```bash
+python -m src.cli.baseline_study --git-commit "$(git rev-parse HEAD)"   # [--out DIR]
+```
+
+It fetches the fixed universe once, writes `manifest.json`, `summary.csv`,
+`observations.csv` and `report.md` under git-ignored `data/research/`, and
+refuses to overwrite a completed run. No research parameter is a flag. See
+[docs/research_baseline_study.md](docs/research_baseline_study.md).
 
 ## Data sources
 
@@ -320,9 +353,11 @@ pull requests.
 ## Roadmap
 
 Phase 12 is implemented through 12G (the headless collector; scheduling it is
-operator guidance, not code). Planned next, in order, none started:
+operator guidance, not code). Phase R's methodology is implemented and frozen;
+its first real-data run and results gate follow. Planned next, in order:
 
-1. **Phase R** — first benchmarked retrospective research study
+1. **Phase R** — results gate: one frozen run, tracked manifest/summary/report,
+   human interpretation and Phase 13 questions
 2. **Phase 13** — error analysis / controlled improvement
 3. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)

@@ -311,9 +311,11 @@ def test_no_python_hash_is_used_for_identity():
 
 
 def test_only_the_application_orchestration_consumes_outcomes():
-    """One consumer, by name. The 12D application module is the only
-    production code that may register, evaluate or read through the ledger;
-    the dashboard reaches outcomes through its API, and nothing else does."""
+    """Consumers, by name. The 12D application module is the only production
+    code that may register, evaluate or read through the ledger; the Phase R
+    study orchestration reuses only the package's bar fingerprint for its
+    manifest. The dashboard reaches outcomes through the application's API,
+    and nothing else does."""
     consumers = [
         path.relative_to(SRC).as_posix()
         for path in sorted(SRC.rglob("*.py"))
@@ -321,7 +323,20 @@ def test_only_the_application_orchestration_consumes_outcomes():
         and "outcomes" not in path.parts
         and imports_package(imported(path), "src.outcomes")
     ]
-    assert consumers == ["application/outcomes.py"], consumers
+    assert consumers == ["application/outcomes.py", "application/study.py"], consumers
+
+
+def test_the_study_orchestration_reuses_only_the_bar_fingerprint():
+    """Phase R records what bars it read; it never registers, evaluates or
+    reads a ledger. The one name it takes from the package says so."""
+    tree = ast.parse(source(SRC / "application" / "study.py"))
+    taken = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "src.outcomes"
+        for alias in node.names
+    }
+    assert taken == {"bars_fingerprint"}, taken
 
 
 def test_the_dashboard_never_reaches_outcomes_directly():

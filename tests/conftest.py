@@ -171,3 +171,18 @@ def _outcome_ledger_root_is_temporary(tmp_path, monkeypatch):
     import src.application.outcomes as outcomes
 
     monkeypatch.setattr(outcomes, "DEFAULT_OUTCOMES_ROOT", tmp_path / "outcomes-default")
+
+
+@pytest.fixture(autouse=True)
+def _research_root_is_temporary(tmp_path, monkeypatch):
+    """No test may write into the repository's ``data/research``.
+
+    The Phase R runner writes under the application default root when no
+    ``--out`` / ``out_root`` is given. Every Phase R test passes one
+    explicitly; this redirects the default into ``tmp_path`` so that no
+    suite, present or future, can leave a generated study under the
+    repository.
+    """
+    import src.application.study as study
+
+    monkeypatch.setattr(study, "DEFAULT_RESEARCH_ROOT", tmp_path / "research-default")

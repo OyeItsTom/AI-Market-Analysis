@@ -1207,3 +1207,104 @@ def test_no_dashboard_or_view_model_claims_nothing_leaves_the_machine():
         for phrase in ("no data leaves", "nothing leaves your", "never leaves your",
                        "stays on your machine", "does not leave your"):
             assert phrase not in text, f"{path.name}: {phrase!r}"
+
+
+# -- Phase R: the research package is domain, and the study CLI is a caller ------------
+
+RESEARCH_FILES = python_files("src/research")
+RESEARCH_ARTIFACT_STORE = SRC / "research" / "artifacts.py"
+
+
+def test_the_research_package_exists_with_its_four_modules_and_the_store():
+    assert sorted(p.name for p in RESEARCH_FILES) == [
+        "__init__.py", "artifacts.py", "definition.py", "render.py", "study.py",
+    ]
+    assert (SRC / "cli" / "baseline_study.py") in CLI_FILES
+    assert (SRC / "application" / "study.py") in APPLICATION_FILES
+
+
+@pytest.mark.parametrize("path", RESEARCH_FILES, ids=lambda p: p.name)
+def test_research_imports_only_stdlib_and_its_allowed_domain_packages(path):
+    """An allowlist: it excludes every caller tier (application, dashboard,
+    cli) and every sibling the study does not need (outcomes, reasoning,
+    scanner, portfolio, news, feeds, backtesting, signals) by construction."""
+    for name in imported_modules(path):
+        root = name.split(".")[0]
+        if root == "src":
+            assert (
+                name.startswith("src.data")
+                or name.startswith("src.strategies")
+                or name.startswith("src.evaluation")
+                or name == "src.assessments.policy"
+                or name.startswith("src.research")
+            ), f"{path.name} imports {name}"
+            continue
+        assert root in {
+            "__future__", "csv", "dataclasses", "datetime", "enum", "hashlib", "io",
+            "json", "pathlib", "statistics", "typing", "types",
+        }, f"{path.name} imports unexpected module {name}"
+
+
+@pytest.mark.parametrize("path", RESEARCH_FILES, ids=lambda p: p.name)
+def test_only_the_research_artifact_store_touches_the_filesystem(path):
+    """Mirrors the Phase 12 ledger rule: one adapter opens files, the engine and
+    the renderers are pure."""
+    tree = ast.parse(path.read_text(), filename=str(path))
+    touches = [
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id in FILE_PRIMITIVES)
+            or (isinstance(node.func, ast.Attribute) and node.func.attr in FILE_PRIMITIVES)
+        )
+    ]
+    if path == RESEARCH_ARTIFACT_STORE:
+        assert set(touches) == {"mkdir", "write_text"}, touches
+    else:
+        assert not touches, f"{path.name} performs file I/O via {touches}"
+        assert "pathlib" not in imported_modules(path) or path.name == "artifacts.py"
+
+
+def test_research_reads_no_clock_network_or_environment():
+    for path in RESEARCH_FILES:
+        names = imported_modules(path)
+        for module in ("os", "sys", "time", "socket", "urllib", "requests", "httpx",
+                       "subprocess", "random", "yfinance", "pandas", "numpy"):
+            assert not imports_package(names, module), f"{path.name} imports {module}"
+        used = code_identifiers(path)
+        assert "now" not in used and "utcnow" not in used and "environ" not in used, path.name
+
+
+def test_the_research_engine_does_no_price_arithmetic_of_its_own():
+    """Every forward return is read off a Phase 4 record. The only arithmetic
+    the engine performs is the descriptive delta (a subtraction) and the raw
+    close-to-close diagnostic, both named functions with one job."""
+    tree = ast.parse((SRC / "research" / "study.py").read_text())
+    price_reads = {
+        node.attr for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr in {"open", "high", "low", "close", "volume"}
+    }
+    assert not price_reads, price_reads
+    divisions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Mult, ast.Pow))
+    ]
+    # The one division: the raw-basis diagnostic over ``series.values("close")``.
+    assert len(divisions) == 1, [ast.unparse(node) for node in divisions]
+    assert "closes[index] / closes[index - 1]" in ast.unparse(divisions[0])
+
+
+def test_the_study_cli_is_a_caller_of_the_application_only():
+    text = (SRC / "cli" / "baseline_study.py").read_text()
+    for forbidden in ("src.research", "src.strategies", "src.evaluation", "src.data",
+                      "src.outcomes", "pathlib", "subprocess", "yfinance", "--symbol",
+                      "--start", "--horizon", "--interval"):
+        assert forbidden not in text, forbidden
+
+
+def test_the_study_orchestration_requests_settled_bars_and_runs_no_git():
+    text = (SRC / "application" / "study.py").read_text()
+    assert "include_unsettled=False" in text
+    for forbidden in ("subprocess", "git rev-parse", "os.popen", "yfinance"):
+        assert forbidden not in text, forbidden

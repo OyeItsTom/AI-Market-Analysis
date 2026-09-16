@@ -33,6 +33,13 @@ from .paper import (
     build_provenance,
     parse_notional,
 )
+from .study import (
+    DEFAULT_RESEARCH_ROOT,
+    STUDY_LABEL,
+    StudyRun,
+    run_baseline_study,
+    validate_git_commit,
+)
 from .snapshot import (
     BASIS,
     ENSEMBLE,
@@ -83,4 +90,9 @@ __all__ = [
     "DEFAULT_RISK_POLICY",
     "parse_notional",
     "build_provenance",
+    "DEFAULT_RESEARCH_ROOT",
+    "STUDY_LABEL",
+    "StudyRun",
+    "run_baseline_study",
+    "validate_git_commit",
 ]
