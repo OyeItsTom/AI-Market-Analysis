@@ -25,6 +25,8 @@ and **paper-analysis** platform.
 (optional).**
 **Phase 12 — Prospective outcome tracking + descriptive aggregation:
 implemented (12A–12F).**
+**Phase 12G — Headless outcome collection (`python -m src.cli.outcome_refresh`):
+implemented.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -119,6 +121,15 @@ or score an outcome, and the dashboard shows one line of operational counts
 and no summary. It is research infrastructure for a future benchmarked study,
 not a performance record. See **[docs/outcomes.md](docs/outcomes.md)** and
 **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**.
+
+Phase 12G adds the same refresh **without the dashboard**:
+`python -m src.cli.outcome_refresh SPY --interval 1d` builds the snapshot,
+registers its claims and records earlier outcomes for each listed symbol
+through the identical application path, prints one line per symbol, and
+exits. It performs one finite refresh — it does not schedule itself, poll or
+run in the background; an operator's scheduler (launchd on macOS) invokes it.
+Repeating an identical run is safe: the ledger reports the same claims as
+duplicates and writes nothing. The ledger is local, and nothing trades.
 
 ## Target architecture
 
@@ -249,6 +260,17 @@ store.write(bars)  # only settled bars; pass include_unsettled=True for the form
 cached = store.read(SeriesKey("AAPL", Interval.DAY_1, "yfinance"))
 ```
 
+Headless outcome collection (Phase 12G), one finite refresh then exit:
+
+```bash
+python -m src.cli.outcome_refresh SPY --interval 1d
+python -m src.cli.outcome_refresh SPY QQQ --interval 1d   # in this order, exit 1 if any fails
+```
+
+It writes to the same local `data/outcomes/` ledger the dashboard uses (or
+`--outcome-root PATH`), is safe to repeat, and never trades. See
+[docs/outcomes.md](docs/outcomes.md#headless-collection-12g).
+
 ## Data sources
 
 | Provider | Status | Notes |
@@ -297,14 +319,12 @@ pull requests.
 
 ## Roadmap
 
-Phase 12 is complete through 12F (documentation and closure). Planned next,
-in order, none started:
+Phase 12 is implemented through 12G (the headless collector; scheduling it is
+operator guidance, not code). Planned next, in order, none started:
 
-1. **12G** — headless scheduled collection, so claims accumulate without a
-   person pressing Refresh
-2. **Phase R** — first benchmarked retrospective research study
-3. **Phase 13** — error analysis / controlled improvement
-4. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
+1. **Phase R** — first benchmarked retrospective research study
+2. **Phase 13** — error analysis / controlled improvement
+3. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 
 Anything beyond that — alternative storage, a second provider, intraday

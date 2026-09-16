@@ -2,7 +2,13 @@
 
 The dependency direction is::
 
-    dashboard  ->  application  ->  Phase 1-6 domain
+    dashboard  -\
+                 >  application  ->  Phase 1-6 domain
+    cli        -/
+
+``src/cli`` (Phase 12G) is a second caller tier beside the dashboard: it may
+reach the domain only through ``src.application``, and the domain never
+learns about either caller.
 
 Every rule below is checked against the parsed source, so a boundary cannot be
 crossed by an import that merely looks harmless in a diff. The Phase 5/6
@@ -84,10 +90,15 @@ def code_identifiers(path: pathlib.Path) -> set[str]:
 
 DASHBOARD_FILES = python_files("src/dashboard")
 APPLICATION_FILES = python_files("src/application")
+CLI_FILES = python_files("src/cli")
+#: The tiers above the Phase 1-6 domain: the application layer and its two
+#: callers. Classified by the top-level package under ``src``, never by a
+#: directory name anywhere in the absolute path.
+NON_DOMAIN_PACKAGES = ("application", "dashboard", "cli")
 DOMAIN_FILES = [
     path
     for path in python_files("src")
-    if "application" not in path.parts and "dashboard" not in path.parts
+    if path.relative_to(SRC).parts[0] not in NON_DOMAIN_PACKAGES
 ]
 
 
@@ -142,7 +153,10 @@ def test_application_never_imports_streamlit(path):
 
 @pytest.mark.parametrize("path", APPLICATION_FILES, ids=lambda p: p.name)
 def test_application_never_imports_the_dashboard(path):
-    assert not imports_package(imported_modules(path), "src.dashboard")
+    """Nor the CLI: the application layer knows neither of its callers."""
+    names = imported_modules(path)
+    assert not imports_package(names, "src.dashboard")
+    assert not imports_package(names, "src.cli")
 
 
 # -- domain never learns about Phase 7 ----------------------------------
@@ -153,6 +167,7 @@ def test_domain_never_imports_the_application_layer(path):
     names = imported_modules(path)
     assert not imports_package(names, "src.application")
     assert not imports_package(names, "src.dashboard")
+    assert not imports_package(names, "src.cli")
 
 
 def test_no_phase_one_to_six_source_was_modified_to_reach_phase_seven():
@@ -161,6 +176,61 @@ def test_no_phase_one_to_six_source_was_modified_to_reach_phase_seven():
         text = path.read_text()
         assert "src.application" not in text
         assert "src.dashboard" not in text
+        assert "src.cli" not in text
+
+
+def test_the_domain_file_set_is_exactly_everything_outside_the_three_tiers():
+    """Excluding the tiers from ``DOMAIN_FILES`` must not have hollowed it
+    out: it is precisely every ``src`` file that is not application, dashboard
+    or cli -- every Phase 1-6 package and every later domain package too."""
+    everything = set(python_files("src"))
+    assert set(DOMAIN_FILES) == everything - set(DASHBOARD_FILES + APPLICATION_FILES + CLI_FILES)
+    swept_packages = {path.relative_to(SRC).parts[0] for path in DOMAIN_FILES}
+    for package in DOMAIN_PACKAGES + ("src.outcomes", "src.news", "src.feeds", "src.scanner",
+                                      "src.reasoning"):
+        assert package.split(".")[1] in swept_packages, package
+    assert not swept_packages & set(NON_DOMAIN_PACKAGES)
+
+
+# -- cli -> application only (Phase 12G) --------------------------------
+
+
+def test_the_cli_package_exists():
+    assert CLI_FILES and (SRC / "cli" / "outcome_refresh.py") in CLI_FILES
+
+
+@pytest.mark.parametrize("path", CLI_FILES, ids=lambda p: p.name)
+@pytest.mark.parametrize("package", DOMAIN_PACKAGES + (
+    "src.outcomes", "src.dashboard", "src.reasoning", "src.scanner", "src.news", "src.feeds",
+))
+def test_cli_never_imports_a_domain_or_sibling_package(path, package):
+    assert not imports_package(imported_modules(path), package), (
+        f"{path.relative_to(REPO)} imports {package}; the CLI may only reach the "
+        "pipeline through src.application"
+    )
+
+
+@pytest.mark.parametrize("path", CLI_FILES, ids=lambda p: p.name)
+def test_cli_imports_only_stdlib_and_application(path):
+    for name in imported_modules(path):
+        root = name.split(".")[0]
+        if root == "src":
+            assert name.startswith("src.application") or name.startswith("src.cli"), (
+                f"{path.name} imports {name}"
+            )
+            continue
+        # A literal allowlist, as for the dashboard: no filesystem, process,
+        # clock-sleeping or scheduling module belongs in a caller of the
+        # application layer.
+        assert root in {
+            "__future__", "argparse", "json", "sys", "traceback", "datetime", "typing",
+            "dataclasses", "enum", "collections", "types",
+        }, f"{path.name} imports unexpected third-party module {name}"
+
+
+@pytest.mark.parametrize("path", DASHBOARD_FILES, ids=lambda p: p.name)
+def test_the_dashboard_never_imports_the_cli(path):
+    assert not imports_package(imported_modules(path), "src.cli")
 
 
 # -- the research-to-action firewall ------------------------------------
