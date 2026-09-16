@@ -36,6 +36,15 @@ interval changes, not when research is refreshed. What the provider returns is
 kept only once the reasoning domain has validated it, and it is discarded the
 moment the research it explained is replaced. When no provider is configured
 the control is disabled and everything else on this dashboard is unchanged.
+
+**Outcome tracking follows a successful refresh, and nothing else.** Phase 12D
+registers what the refreshed snapshot claimed and records what the market did
+after earlier claims, in one application call made in the ``Refresh`` branch
+after the snapshot has been published -- never on a rerun, a render, a display
+control or the AI explanation. It is auxiliary: if it fails, the snapshot stays
+on screen, a one-line notice names the failure class and nothing more, and the
+detail goes to the terminal. This module never sees a ledger file, a record key
+or a path; it holds the composed ledger and the last result, both opaque.
 """
 
 from __future__ import annotations
@@ -73,6 +82,7 @@ from src.application.scanner import (
     load_universes as load_universe_configuration,
 )
 from src.application.news import NewsService, SymbolNotSupported, build_service
+from src.application.outcomes import OUTCOME_SPECS, build_outcome_ledger, refresh_outcomes
 from src.application.view_models import (
     REASONING_HEADING,
     REASONING_NO_ASSESSMENT,
@@ -185,6 +195,19 @@ def init_session() -> None:
     if "reasoning_failure" not in state:
         # One whole ReasoningFailureView, or None. Never the exception.
         state.reasoning_failure = None
+    if "outcome_ledger" not in state:
+        # The composed outcome ledger, or None. Injectable like the provider:
+        # a test seeds one over a temporary root so no refresh writes into
+        # the repository. Composed lazily on the first successful refresh.
+        state.outcome_ledger = None
+    if "outcome_result" not in state:
+        # One whole OutcomeRefreshResult from the current snapshot's refresh,
+        # or None. Cleared at the start of every refresh attempt.
+        state.outcome_result = None
+    if "outcome_failure" not in state:
+        # One sanitized sentence naming the failure class, or None. Never the
+        # exception, its message or a path.
+        state.outcome_failure = None
 
 
 def refresh(symbol: str, interval) -> None:
@@ -197,6 +220,11 @@ def refresh(symbol: str, interval) -> None:
     """
     state = st.session_state
     clock = state.clock
+    # Whatever outcome status was showing belonged to the previous refresh.
+    # It goes before anything is attempted, so a failed refresh cannot leave
+    # an earlier result beside a new failure.
+    state.outcome_result = None
+    state.outcome_failure = None
     try:
         built = (
             build_snapshot(state.provider, symbol, interval)
@@ -223,6 +251,37 @@ def refresh(symbol: str, interval) -> None:
     # research has just been replaced. Both outcomes go; the service stays.
     state.reasoning_snapshot = None
     state.reasoning_failure = None
+    # Only now, with a complete snapshot published: what it claimed is
+    # registered and earlier claims are measured. Auxiliary, and last.
+    track_outcomes(built)
+
+
+def track_outcomes(snapshot) -> None:
+    """Register the snapshot's claims and record what followed earlier ones.
+
+    Entered only from ``refresh`` after a successful publication, once per
+    press. The ledger is composed on the first successful refresh, never at
+    start-up, and kept. Any failure -- a ledger that cannot be read, a
+    contradiction, anything else -- leaves the snapshot on screen, names the
+    failure class in one safe sentence, and sends the detail to the terminal.
+    """
+    state = st.session_state
+    ledger = state.outcome_ledger
+    if ledger is None:
+        try:
+            ledger = build_outcome_ledger()
+            state.outcome_ledger = ledger
+        except Exception as exc:
+            traceback.print_exc()
+            state.outcome_failure = f"Could not start outcome tracking: {type(exc).__name__}"
+            return
+    try:
+        result = refresh_outcomes(snapshot, OUTCOME_SPECS, ledger, now=snapshot.built_at)
+    except Exception as exc:
+        traceback.print_exc()
+        state.outcome_failure = f"Outcome tracking failed: {type(exc).__name__}"
+        return
+    state.outcome_result = result
 
 
 def refresh_news(symbol: str) -> None:
@@ -698,6 +757,7 @@ def render_research() -> None:
     closes = [bar.close for bar in snapshot.series.bars]
 
     render_market(market_view(snapshot), closes)
+    render_outcome_status(snapshot)
     st.divider()
     render_features(feature_rows(snapshot))
     st.divider()
@@ -719,6 +779,18 @@ def render_research() -> None:
     # and the explanation is of it.
     st.divider()
     render_reasoning_section(snapshot)
+
+
+def render_outcome_status(snapshot) -> None:
+    """One line of operational counts from this snapshot's refresh, or the
+    sanitized notice that tracking failed. No table, no chart, no score."""
+    state = st.session_state
+    failure = state.outcome_failure
+    if failure is not None:
+        st.warning(failure)
+    result = state.outcome_result
+    if result is not None and result.describes(snapshot):
+        st.caption(result.summary)
 
 
 def render_paper() -> None:

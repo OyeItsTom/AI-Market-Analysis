@@ -8,7 +8,9 @@ a domain module that existed before this phase.
 Later phases add panels to this interface without changing that rule. Phase
 11A adds an optional, explicitly requested **grounded AI explanation** of the
 research evidence below the assessment — see the section near the end and
-**[docs/reasoning.md](reasoning.md)**.
+**[docs/reasoning.md](reasoning.md)**. Phase 12 adds **outcome tracking** as a
+step that follows a successful Refresh — see its section below and
+**[docs/outcomes.md](outcomes.md)**.
 
 ## Purpose
 
@@ -49,6 +51,7 @@ human clicks Refresh
     -> assess() under the fixed Phase 7 policy
     -> freeze a ResearchSnapshot
     -> replace the previous snapshot atomically
+    -> (Phase 12) register the snapshot's claims, complete earlier outcomes
 ```
 
 Nothing is fetched until you ask. The symbol box starts empty, the placeholder
@@ -291,6 +294,39 @@ rejection — no partial text is salvaged — and there is no retry, fallback or
 cache. Full detail: **[docs/reasoning.md](reasoning.md)** and
 **[ADR 0009](adr/0009-grounded-reasoning.md)**.
 
+## Outcome tracking (Phase 12)
+
+After a Refresh has published its snapshot, and only then, the dashboard makes
+one application call (`refresh_outcomes`) that registers what the snapshot
+claimed about its latest settled bar and completes the forward measurement of
+earlier claims whose horizon the refreshed series now covers. It runs in the
+Refresh branch once per press — never on a rerun, a widget change, a scan, a
+paper action or the AI explanation — and, like the news and feed stores, it
+writes through the application layer, never from a dashboard module: an
+append-only ledger under `data/outcomes/` (git-ignored), composed on the
+first successful Refresh. No dashboard module sees a path, a record key or a
+ledger line.
+
+What you see is a single caption under the assessment, operational counts and
+nothing more:
+
+> Outcome tracking: 4 claims registered (4 new), 0 new outcomes, 12 pending.
+
+It is shown only while it belongs to the snapshot on screen. There is no
+table of outcomes, no chart, no return figure and no summary in the
+interface: the Phase 12E aggregation (`summarize_outcomes`) exists as a
+library function and is not rendered anywhere. Nothing here feeds the
+research, the scanner, the paper panel or the AI explanation.
+
+Tracking is auxiliary and its failure is isolated. If the ledger cannot be
+started or read, if a refresh finds a conflicting record, or if anything else
+goes wrong, the snapshot stays on screen exactly as published, a one-line
+warning names the failure class (`Outcome tracking failed: <ExceptionType>`)
+and nothing more, and the traceback goes to the terminal. A refresh that fails
+part-way leaves the records it had already appended durable; the next Refresh
+finds them and continues. Full detail: **[docs/outcomes.md](outcomes.md)** and
+**[ADR 0010](adr/0010-prospective-outcome-tracking.md)**.
+
 ## Phase 7 non-goals
 
 Not built, deliberately:
@@ -298,7 +334,11 @@ Not built, deliberately:
 - no `CsvBarStore` reads, writes or merges; Refresh always goes to the provider
 - no intraday intervals, no start-date editor, no adjusted-price toggle
 - no policy, limit or ensemble editing from the interface
-- no persistence of any kind, no database, no journal
+- no persistence of dashboard state — no database, no journal; paper state
+  and scans are session-only. Later phases added application-layer stores
+  the dashboard triggers but never touches directly: news (Phase 8), feeds
+  (Phase 9) and the append-only outcome ledger written once per Refresh
+  (Phase 12, see above)
 - no scheduler, no background refresh, no continuous monitoring
 - no broker, trading API, order, execution, or broker credential
 - no LLM and no generated explanation *in Phase 7 itself*; Phase 11A adds an

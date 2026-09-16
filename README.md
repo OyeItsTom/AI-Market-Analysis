@@ -1,11 +1,13 @@
 # AI Market Analysis
 
-An educational, evidence-driven quantitative market-research and
-**paper-trading** platform.
+An educational, evidence-driven, AI-assisted quantitative market-research
+and **paper-analysis** platform.
 
 > **This system does not execute real-money trades.** It is a research and
 > learning project. Nothing in it is investment advice, and no part of it is
-> production-ready.
+> production-ready. "Paper" here means hypothetical positions a human writes
+> down by hand — there is no simulated execution, no fill, no cost model and
+> no profit-and-loss figure anywhere in the project.
 
 ## Status
 
@@ -21,6 +23,8 @@ An educational, evidence-driven quantitative market-research and
 **Phase 10 — Market universe + multi-stock scanner: implemented.**
 **Phase 11A — Grounded AI explanation of research evidence: implemented
 (optional).**
+**Phase 12 — Prospective outcome tracking + descriptive aggregation:
+implemented (12A–12F).**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -97,6 +101,25 @@ explained automatically, one click asks at most once, and raw market history,
 news, feeds, scanner results and paper positions are never sent. See
 **[docs/reasoning.md](docs/reasoning.md)**.
 
+Phase 12 adds **prospective outcome tracking**. Each explicit Refresh writes
+what the pipeline claimed about the latest settled bar — each hypothesis's
+observation and the policy's assessment, with the clock and a fingerprint of
+the bar they rested on — to an append-only ledger under `data/outcomes/`
+(git-ignored). On later Refreshes, once enough settled bars exist, Phase 4
+measures the forward return from that bar and the result is appended beside
+the claim; neither record is ever rewritten. Unlike Phase 4's retrospective
+evaluation, the claim exists *before* the outcome does, so it cannot be
+backfilled or completed from data that was available when it was made, and a
+revised source bar refuses evaluation rather than measuring a changed premise.
+Aggregation is **descriptive only** — counts, explicit coverage and plain
+statistics of forward returns per producer, state, source, horizon and
+evaluation version, with an overlap caveat and no hit rate, ranking,
+significance or pooled cross-producer figure. No AI component can read, modify
+or score an outcome, and the dashboard shows one line of operational counts
+and no summary. It is research infrastructure for a future benchmarked study,
+not a performance record. See **[docs/outcomes.md](docs/outcomes.md)** and
+**[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**.
+
 ## Target architecture
 
 ```
@@ -105,7 +128,10 @@ Market Data  →  Validation  →  Normalized OHLCV  →  Feature Engine
      →  Risk Engine  →  Signal Engine  →  Paper Trading  →  Dashboard
 ```
 
-Phase 1 covers the first three boxes.
+Phase 1 covers the first three boxes. This sketch predates the project and
+is kept for orientation only: "Signal Engine" and "Paper Trading" are not
+commitments to automated signals or simulated execution, neither of which is
+planned — see the Roadmap and the "Not implemented" section below.
 
 ## What exists today
 
@@ -147,6 +173,14 @@ src/evaluation/          outcome evaluation (no trading simulation)
 ├── evaluate.py          causal evaluation against subsequent bars
 └── metrics.py           EvaluationSummary + benchmark
 
+src/outcomes/            prospective outcome tracking (append-only, no scoring)
+├── identity.py          deterministic artifact / outcome / bar keys
+├── models.py            ObservationArtifact, AssessmentArtifact, OutcomeRecord
+├── tracking.py          evaluate_artifact — one claim through Phase 4
+├── ports.py             OutcomeLedger / OutcomeReader contracts, LedgerPartition
+├── store.py             JsonlOutcomeLedger — data/outcomes/<sym>/<interval>/<basis>/
+└── summary.py           summarize_outcomes — descriptive per-partition aggregates
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -167,6 +201,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/feeds.md](docs/feeds.md)** (Phase 9),
 **[docs/scanner.md](docs/scanner.md)** (Phase 10),
 **[docs/reasoning.md](docs/reasoning.md)** (Phase 11A),
+**[docs/outcomes.md](docs/outcomes.md)** (Phase 12),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -177,7 +212,8 @@ dashboard), **[ADR 0006](docs/adr/0006-news-and-announcements.md)** (news and
 announcements), **[ADR 0007](docs/adr/0007-external-feeds.md)** (external
 feeds), **[ADR 0008](docs/adr/0008-market-scanner.md)** (market universe and
 scanner), **[ADR 0009](docs/adr/0009-grounded-reasoning.md)** (grounded AI
-explanation).
+explanation), **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**
+(prospective outcome tracking and deterministic aggregation).
 
 ### The core idea
 
@@ -259,6 +295,21 @@ storage tests use temporary directories.
 `compileall`, an import check and the full suite on pushes to `main` and on
 pull requests.
 
+## Roadmap
+
+Phase 12 is complete through 12F (documentation and closure). Planned next,
+in order, none started:
+
+1. **12G** — headless scheduled collection, so claims accumulate without a
+   person pressing Refresh
+2. **Phase R** — first benchmarked retrospective research study
+3. **Phase 13** — error analysis / controlled improvement
+4. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
+   authority over outcomes)
+
+Anything beyond that — alternative storage, a second provider, intraday
+tracking, ML — is a possibility, not a decision.
+
 ## Not implemented (by design, for later phases)
 
 Economic simulation (trades, fills, costs, slippage, cash balances, equity
@@ -273,8 +324,17 @@ explains an assessment the pipeline already made; it does not make one,
 forecast anything, or recommend anything. This is not an AI trading bot.
 
 Phase 7's dashboard displays this pipeline; it does not extend it. It has no
-scheduler, no background refresh, no persistence, no authentication and no
-network exposure beyond the loopback interface.
+scheduler, no background refresh, no authentication and no network exposure
+beyond the loopback interface. Its own state — paper positions, scans, the
+AI explanation — is session-only; what reaches disk is the Phase 8 news
+store, the Phase 9 feed store and, since Phase 12, the outcome ledger,
+each written by its application layer on an explicit action and each under
+a git-ignored `data/` directory.
+
+Phase 12 records claims and measures what followed. It computes no hit rate,
+win rate, ranking, significance, confidence interval or profitability figure,
+and its summaries are descriptive counts over overlapping, non-independent
+samples. Nothing in it is a track record of an edge.
 
 Phase 8 stores external information locally, but interprets none of it. It has
 no sentiment analysis, no LLM, no article-body storage, no scraping, no

@@ -204,6 +204,129 @@ class OutcomeSpec:
         )
 
 
+def _require_status_consistency(record: object) -> None:
+    """A record's populated values must agree with its own status.
+
+    Shared by :class:`ForwardMeasurement` and :class:`EvaluatedOutcome`; the
+    wording is unchanged from the original per-record check so an existing
+    caller sees exactly the same error.
+    """
+    status: OutcomeStatus = record.status  # type: ignore[attr-defined]
+    outcome_value = record.outcome_value  # type: ignore[attr-defined]
+    if status is OutcomeStatus.EVALUATED:
+        missing = [
+            name
+            for name in (
+                "reference_timestamp", "future_timestamp",
+                "reference_price", "future_price", "outcome_value",
+            )
+            if getattr(record, name) is None
+        ]
+        if missing:
+            raise OutcomeError(
+                f"an EVALUATED outcome must carry {missing}; a record claiming to be "
+                "evaluated with missing values is not auditable"
+            )
+        if not math.isfinite(float(outcome_value)):
+            raise OutcomeError(
+                f"an EVALUATED outcome must be a finite number, got "
+                f"{outcome_value!r}"
+            )
+    else:
+        if outcome_value is not None:
+            raise OutcomeError(
+                f"status {status.value!r} must not carry an outcome value; "
+                "an unavailable outcome is not a zero result"
+            )
+        # A record must not describe bars its own status says were never
+        # reached. "No reference bar" carrying a reference price, or
+        # "insufficient future data" carrying a future price, is
+        # self-contradictory and would mislead anyone auditing the record
+        # later -- exactly what this type exists to prevent.
+        forbidden = {
+            OutcomeStatus.NO_REFERENCE_BAR: (
+                "reference_timestamp", "reference_price",
+                "future_timestamp", "future_price",
+            ),
+            OutcomeStatus.INELIGIBLE_OBSERVATION: (
+                "reference_timestamp", "reference_price",
+                "future_timestamp", "future_price",
+            ),
+            # An insufficient-future record legitimately keeps the
+            # reference bar it did find; it must not claim a future one.
+            OutcomeStatus.INSUFFICIENT_FUTURE_DATA: (
+                "future_timestamp", "future_price",
+            ),
+        }[status]
+        populated = [name for name in forbidden if getattr(record, name) is not None]
+        if populated:
+            raise OutcomeError(
+                f"status {status.value!r} must not carry {populated}; the record "
+                "would describe bars its own status says were never reached"
+            )
+
+
+@dataclass(frozen=True)
+class ForwardMeasurement:
+    """One market point's forward measurement, with no producer attached.
+
+    The market-only half of an :class:`EvaluatedOutcome`: which bar was the
+    reference, which bar closed the horizon, the two prices read and the
+    value derived from them. It carries no hypothesis, no classification and
+    no claim, because the forward behaviour of a market point is a property
+    of ``(symbol, interval, basis, timestamp)`` under an :class:`OutcomeSpec`
+    -- not of whoever made a claim about that point. It is what
+    :func:`~src.evaluation.evaluate.measure_forward` returns and what
+    :func:`~src.evaluation.evaluate.evaluate_observations` wraps into a
+    per-observation record.
+
+    Statuses are the market subset of :class:`OutcomeStatus`:
+    ``EVALUATED``, ``NO_REFERENCE_BAR`` and ``INSUFFICIENT_FUTURE_DATA``.
+    ``INELIGIBLE_OBSERVATION`` is a statement about a *claim* and can never
+    describe a market point, so it is refused here.
+
+    The same self-consistency rules as :class:`EvaluatedOutcome` apply: an
+    evaluated measurement carries every value, and an unavailable one
+    describes no bar its own status says was never reached.
+    """
+
+    observation_timestamp: datetime
+    horizon_bars: int
+    status: OutcomeStatus
+    reference_timestamp: datetime | None = None
+    future_timestamp: datetime | None = None
+    reference_price: float | None = None
+    future_price: float | None = None
+    outcome_value: float | None = None
+
+    def __post_init__(self) -> None:
+        set_ = object.__setattr__
+        set_(self, "status", OutcomeStatus(self.status))
+        if self.status is OutcomeStatus.INELIGIBLE_OBSERVATION:
+            raise OutcomeError(
+                "a market measurement cannot be 'ineligible_observation'; eligibility "
+                "is a property of a claim, not of a market point"
+            )
+        if isinstance(self.horizon_bars, bool) or not isinstance(self.horizon_bars, int):
+            raise OutcomeError(
+                f"horizon_bars must be an int, got {type(self.horizon_bars).__name__}"
+            )
+        if self.horizon_bars < 1:
+            raise OutcomeError(f"horizon_bars must be >= 1, got {self.horizon_bars}")
+        _require_status_consistency(self)
+
+    @property
+    def is_evaluated(self) -> bool:
+        return self.status is OutcomeStatus.EVALUATED
+
+    def describe(self) -> str:
+        value = "n/a" if self.outcome_value is None else f"{self.outcome_value:+.6f}"
+        return (
+            f"{self.observation_timestamp.isoformat()} h={self.horizon_bars} "
+            f"-> {self.status.value} {value}"
+        )
+
+
 @dataclass(frozen=True)
 class EvaluatedOutcome:
     """One observation's outcome. Immutable and self-describing.
@@ -260,57 +383,7 @@ class EvaluatedOutcome:
         set_(self, "observation_state", ResearchState(self.observation_state))
         set_(self, "status", OutcomeStatus(self.status))
 
-        if self.status is OutcomeStatus.EVALUATED:
-            missing = [
-                name
-                for name in (
-                    "reference_timestamp", "future_timestamp",
-                    "reference_price", "future_price", "outcome_value",
-                )
-                if getattr(self, name) is None
-            ]
-            if missing:
-                raise OutcomeError(
-                    f"an EVALUATED outcome must carry {missing}; a record claiming to be "
-                    "evaluated with missing values is not auditable"
-                )
-            if not math.isfinite(float(self.outcome_value)):
-                raise OutcomeError(
-                    f"an EVALUATED outcome must be a finite number, got "
-                    f"{self.outcome_value!r}"
-                )
-        else:
-            if self.outcome_value is not None:
-                raise OutcomeError(
-                    f"status {self.status.value!r} must not carry an outcome value; "
-                    "an unavailable outcome is not a zero result"
-                )
-            # A record must not describe bars its own status says were never
-            # reached. "No reference bar" carrying a reference price, or
-            # "insufficient future data" carrying a future price, is
-            # self-contradictory and would mislead anyone auditing the record
-            # later -- exactly what this type exists to prevent.
-            forbidden = {
-                OutcomeStatus.NO_REFERENCE_BAR: (
-                    "reference_timestamp", "reference_price",
-                    "future_timestamp", "future_price",
-                ),
-                OutcomeStatus.INELIGIBLE_OBSERVATION: (
-                    "reference_timestamp", "reference_price",
-                    "future_timestamp", "future_price",
-                ),
-                # An insufficient-future record legitimately keeps the
-                # reference bar it did find; it must not claim a future one.
-                OutcomeStatus.INSUFFICIENT_FUTURE_DATA: (
-                    "future_timestamp", "future_price",
-                ),
-            }[self.status]
-            populated = [name for name in forbidden if getattr(self, name) is not None]
-            if populated:
-                raise OutcomeError(
-                    f"status {self.status.value!r} must not carry {populated}; the record "
-                    "would describe bars its own status says were never reached"
-                )
+        _require_status_consistency(self)
 
     @property
     def is_evaluated(self) -> bool:
@@ -335,6 +408,7 @@ class EvaluatedOutcome:
 
 __all__ = [
     "OutcomeSpec",
+    "ForwardMeasurement",
     "EvaluatedOutcome",
     "OutcomeStatus",
     "OutcomeType",

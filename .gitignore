@@ -35,6 +35,10 @@ data/news/
 # Downloaded third-party content must never be committed.
 data/feeds/
 
+# The local outcome ledger (Phase 12): what this machine's research claimed
+# and what the market did afterwards. Local research state, never committed.
+data/outcomes/
+
 # Your own feed list. Ignored because it names the sites this machine will
 # fetch, which is local configuration rather than project code. The committed
 # config/external_feeds.example.json shows the format.

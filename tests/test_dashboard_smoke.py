@@ -531,3 +531,224 @@ def test_an_empty_symbol_news_refresh_builds_nothing(monkeypatch):
     app = press(app, "refresh_news_button")
     assert built.calls == []
     assert app.session_state["news_failure"] is not None
+
+
+# -- outcome tracking (Phase 12D): after an explicit successful refresh, once --
+
+
+from src.application.outcomes import build_outcome_ledger  # noqa: E402
+from src.outcomes import JsonlOutcomeLedger, LedgerCorruption  # noqa: E402
+
+
+class CountingLedger:
+    """A real ledger that records every method the dashboard path reaches."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        target = getattr(self.inner, name)
+        if not callable(target):
+            return target
+
+        def call(*args, **kwargs):
+            self.calls.append(name)
+            return target(*args, **kwargs)
+        return call
+
+
+class CorruptLedger(CountingLedger):
+    """Raises the located corruption the store would, path included."""
+
+    def iter_artifacts(self, partition):
+        self.calls.append("iter_artifacts")
+        raise LedgerCorruption(path="/secret/ledger/AAPL/1d/raw/artifacts.jsonl",
+                               line_number=3, byte_offset=512, reason="not json")
+
+
+class Broken(RecordingProvider):
+    def get_bars(self, *args, **kwargs):
+        from src.data.provider import ProviderUnavailableError
+
+        raise ProviderUnavailableError("upstream down")
+
+
+def start_tracking(tmp_path, bar_count: int = 80, *, ledger=None, provider=None) -> AppTest:
+    app = AppTest.from_file(APP, default_timeout=60)
+    app.session_state["provider"] = provider or RecordingProvider(bar_count)
+    app.session_state["clock"] = clock
+    app.session_state["outcome_ledger"] = (
+        CountingLedger(build_outcome_ledger(tmp_path / "outcomes")) if ledger is None else ledger
+    )
+    app.run()
+    assert not app.exception, app.exception
+    return app
+
+
+def readable(app: AppTest) -> str:
+    parts: list[str] = []
+    for kind in ("markdown", "caption", "subheader", "info", "warning", "error",
+                 "text", "title", "header", "success"):
+        parts += [str(e.value) for e in getattr(app, kind)]
+    return "\n".join(parts)
+
+
+def test_nothing_is_tracked_before_refresh(tmp_path):
+    app = start_tracking(tmp_path)
+    assert app.session_state["outcome_ledger"].calls == []
+    assert app.session_state["outcome_result"] is None
+    assert app.session_state["outcome_failure"] is None
+    assert "Outcome tracking" not in readable(app)
+
+
+def test_refresh_registers_the_claims_and_shows_one_status_line(tmp_path):
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    ledger = app.session_state["outcome_ledger"]
+    assert ledger.calls.count("register_artifact") == 4
+    assert ledger.calls.count("iter_artifacts") == 1
+    result = app.session_state["outcome_result"]
+    assert result is not None and result.artifacts_written == 4
+    assert result.describes(app.session_state["snapshot"])
+    assert app.session_state["outcome_failure"] is None
+    captions = [c.value for c in app.caption if c.value.startswith("Outcome tracking")]
+    assert captions == [
+        "Outcome tracking: 4 claims registered (4 new), 0 new outcomes, 12 pending."
+    ]
+    written = ledger.inner.artifacts_path(
+        __import__("src.outcomes", fromlist=["LedgerPartition"]).LedgerPartition(
+            "AAPL", "1d", "raw")
+    )
+    assert written.exists()
+
+
+def test_tracking_uses_the_one_settled_fetch_and_no_second_one(tmp_path):
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    provider = app.session_state["provider"]
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["include_unsettled"] is False
+    snapshot = app.session_state["snapshot"]
+    result = app.session_state["outcome_result"]
+    assert result.now == snapshot.built_at
+    from src.outcomes import LedgerPartition
+
+    held = list(app.session_state["outcome_ledger"].inner.iter_artifacts(
+        LedgerPartition(snapshot.symbol, snapshot.interval, snapshot.basis)))
+    assert {a.data_cutoff for a in held} == {snapshot.latest_bar_open}
+    assert {a.recorded_at for a in held} == {snapshot.built_at}
+    assert {a.source for a in held} == {snapshot.series.source}
+
+
+def test_a_rerun_or_a_typed_symbol_does_not_track_again(tmp_path):
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    ledger = app.session_state["outcome_ledger"]
+    before = list(ledger.calls)
+    app = app.run()
+    assert ledger.calls == before
+    app.sidebar.text_input(key="symbol_input").set_value("MSFT").run()
+    assert ledger.calls == before
+    assert app.session_state["outcome_result"] is not None
+
+
+def test_a_second_explicit_refresh_tracks_exactly_once_more(tmp_path):
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    ledger = app.session_state["outcome_ledger"]
+    app = press(app, "refresh_button")
+    assert ledger.calls.count("iter_artifacts") == 2
+    # Every claim is offered again and the ledger says DUPLICATE; nothing
+    # about the second press is decided in the dashboard or the application.
+    assert ledger.calls.count("register_artifact") == 8
+    result = app.session_state["outcome_result"]
+    assert result.artifact_duplicates == 4 and result.artifacts_written == 0
+
+
+def test_a_failed_refresh_never_touches_the_ledger(tmp_path):
+    app = start_tracking(tmp_path, provider=Broken())
+    app = refresh_with(app, "AAPL")
+    assert app.session_state["snapshot"] is None
+    assert app.session_state["failure"] is not None
+    assert app.session_state["outcome_ledger"].calls == []
+    assert app.session_state["outcome_result"] is None
+    assert app.session_state["outcome_failure"] is None
+    assert not (tmp_path / "outcomes").exists()
+
+
+def test_a_tracking_failure_is_sanitized_and_keeps_the_snapshot(tmp_path):
+    ledger = CorruptLedger(build_outcome_ledger(tmp_path / "outcomes"))
+    app = refresh_with(start_tracking(tmp_path, ledger=ledger), "AAPL")
+    assert not app.exception
+    assert app.session_state["snapshot"] is not None
+    assert app.session_state["failure"] is None
+    assert app.session_state["outcome_result"] is None
+    assert app.session_state["outcome_failure"] == "Outcome tracking failed: LedgerCorruption"
+    text = readable(app)
+    assert "Outcome tracking failed: LedgerCorruption" in text
+    assert "/secret" not in text and "artifacts.jsonl" not in text and "not json" not in text
+    assert any("Outcome tracking failed" in w.value for w in app.warning)
+
+
+def test_a_failed_refresh_after_a_success_shows_no_stale_outcome_status(tmp_path):
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    assert app.session_state["outcome_result"] is not None
+    app.session_state["provider"] = Broken()
+    app = press(app, "refresh_button")
+    assert app.session_state["snapshot"].symbol == "AAPL"      # previous kept
+    assert app.session_state["failure"] is not None
+    assert app.session_state["outcome_result"] is None
+    assert app.session_state["outcome_failure"] is None
+    assert "Outcome tracking" not in readable(app)
+
+
+def test_the_ledger_is_composed_lazily_at_the_application_default(tmp_path):
+    import src.application.outcomes as module
+
+    app = start()
+    assert app.session_state["outcome_ledger"] is None
+    app = refresh_with(app, "AAPL")
+    ledger = app.session_state["outcome_ledger"]
+    assert isinstance(ledger, JsonlOutcomeLedger)
+    assert ledger.root == module.DEFAULT_OUTCOMES_ROOT
+    assert str(ledger.root).startswith(str(tmp_path))
+    assert (ledger.root / "AAPL" / "1d" / "raw" / "artifacts.jsonl").exists()
+    assert not (pathlib.Path(APP).resolve().parents[2] / "data" / "outcomes").exists()
+
+
+def test_a_pending_claim_completes_on_a_later_refresh(tmp_path):
+    from datetime import timedelta
+
+    from tests.test_application_snapshot import CLOCK_NOW
+
+    app = refresh_with(start_tracking(tmp_path, 80), "AAPL")
+    ledger = app.session_state["outcome_ledger"]
+    app.session_state["provider"] = RecordingProvider(82)
+    app.session_state["clock"] = lambda: CLOCK_NOW + timedelta(days=2)
+    app = press(app, "refresh_button")
+    result = app.session_state["outcome_result"]
+    assert result.outcomes_written == 4 and result.artifacts_written == 4
+    assert ledger.calls.count("append_outcome") == 4
+    assert any(c.value == (
+        "Outcome tracking: 4 claims registered (4 new), 4 new outcomes, 20 pending."
+    ) for c in app.caption)
+
+
+def test_a_result_that_does_not_describe_the_shown_snapshot_is_not_rendered(tmp_path):
+    """The render guard, exercised directly: a result from another refresh
+    placed in session state beside this snapshot is not shown as its status."""
+    from src.application.outcomes import refresh_outcomes
+    from src.application.snapshot import build_snapshot
+    from src.data.models import Interval
+
+    app = refresh_with(start_tracking(tmp_path), "AAPL")
+    assert any(c.value.startswith("Outcome tracking") for c in app.caption)
+    from src.evaluation import OutcomeSpec
+
+    other = build_snapshot(RecordingProvider(80), "MSFT", Interval.DAY_1, now=clock)
+    foreign = refresh_outcomes(
+        other, (OutcomeSpec(horizon_bars=1),), build_outcome_ledger(tmp_path / "other"),
+        now=other.built_at,
+    )
+    assert not foreign.describes(app.session_state["snapshot"])
+    app.session_state["outcome_result"] = foreign
+    app = app.run()
+    assert app.session_state["snapshot"].symbol == "AAPL"
+    assert not any(c.value.startswith("Outcome tracking") for c in app.caption)

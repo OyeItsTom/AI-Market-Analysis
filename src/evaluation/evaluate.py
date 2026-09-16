@@ -12,6 +12,18 @@ price, and **nothing after** ``future_index``.  Changing or truncating bars
 beyond that index cannot alter an already-computed outcome -- verified as a
 property in ``tests/evaluation_lookahead.py``, not merely asserted here.
 
+Two entry points, one measurement
+---------------------------------
+:func:`measure_forward` measures one **market point** -- ``(symbol,
+interval, basis, timestamp)`` -- and returns a
+:class:`~src.evaluation.outcome.ForwardMeasurement` with no producer
+attached.  :func:`evaluate_observations` evaluates research observations by
+locating and measuring each one through exactly the same internal path
+(:func:`_locate` then :func:`_measure_at`) and wrapping the result with the
+observation's provenance.  There is one implementation of the reference
+convention, the horizon arithmetic and the forward return, and both entry
+points use it.
+
 Why ``evaluable_from`` is deliberately not used
 -----------------------------------------------
 Phase 3 exposes ``ResearchObservation.evaluable_from`` as a timing *bound*
@@ -26,16 +38,16 @@ horizon.
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Iterable, Sequence
+from datetime import datetime, timedelta
+from typing import Mapping, Sequence
 
 from src.data.models import Interval
-from src.data.series import BarSeries
+from src.data.series import BarSeries, PriceBasis
 from src.strategies.research import ResearchObservation, ResearchState
 
 from .outcome import (
     EvaluatedOutcome,
-    OutcomeError,
+    ForwardMeasurement,
     OutcomeSpec,
     OutcomeStatus,
     PriceField,
@@ -91,28 +103,8 @@ def evaluate_observations(
         observation whose timestamp is not a bar in this series, or bars
         spaced closer than a fixed-duration interval allows.
     """
-    if not isinstance(series, BarSeries):
-        raise EvaluationError(
-            f"expected a BarSeries, got {type(series).__name__}; evaluation consumes "
-            "validated series, not loose bars"
-        )
-    if not isinstance(spec, OutcomeSpec):
-        raise EvaluationError(f"expected an OutcomeSpec, got {type(spec).__name__}")
-
-    if series.basis is not spec.required_basis:
-        raise EvaluationError(
-            f"outcome specification requires {spec.required_basis.value!r} prices but the "
-            f"series is {series.basis.value!r}. Basis conversion belongs to the data "
-            "layer; evaluation will not silently reinterpret prices."
-        )
-    if spec.reference is not ReferenceConvention.NEXT_BAR_OPEN:  # pragma: no cover
-        raise EvaluationError(f"unsupported reference convention {spec.reference!r}")
-
-    # Timestamp -> index. BarSeries guarantees unique, strictly increasing
-    # timestamps, so this mapping is total and unambiguous.
-    index_of = {timestamp: index for index, timestamp in enumerate(series.timestamps)}
-    if len(index_of) != len(series.timestamps):  # pragma: no cover - BarSeries invariant
-        raise EvaluationError("series contains duplicate timestamps")
+    _require_series_and_spec(series, spec)
+    index_of = _index_timestamps(series)
 
     # One observation per bar. A repeated timestamp would be counted twice in
     # the summary, silently inflating every denominator -- including the
@@ -142,24 +134,21 @@ def _evaluate_one(
     observation: ResearchObservation,
     series: BarSeries,
     spec: OutcomeSpec,
-    index_of: dict,
+    index_of: Mapping[datetime, int],
 ) -> EvaluatedOutcome:
     if not isinstance(observation, ResearchObservation):
         raise EvaluationError(
             f"expected a ResearchObservation, got {type(observation).__name__}"
         )
 
-    _require_alignment(observation, series, spec)
-
-    # Exact timestamp match only. A "nearest bar" search would quietly evaluate
-    # an observation against a bar it does not describe.
-    observation_index = index_of.get(observation.timestamp)
-    if observation_index is None:
-        raise EvaluationError(
-            f"observation at {observation.timestamp.isoformat()} does not correspond to "
-            f"any bar in this {series.symbol} {series.interval.value} series; evaluation "
-            "never matches an approximate or nearest timestamp"
-        )
+    observation_index = _locate(
+        series, spec, index_of,
+        symbol=observation.symbol,
+        interval=observation.interval,
+        basis=observation.basis,
+        timestamp=observation.timestamp,
+        subject="observation",
+    )
 
     def record(status: OutcomeStatus, **fields) -> EvaluatedOutcome:
         return EvaluatedOutcome(
@@ -182,17 +171,161 @@ def _evaluate_one(
     if observation.state is ResearchState.INSUFFICIENT_DATA:
         return record(OutcomeStatus.INELIGIBLE_OBSERVATION)
 
+    measurement = _measure_at(series, spec, observation_index)
+    return record(
+        measurement.status,
+        **{
+            name: value
+            for name, value in (
+                ("reference_timestamp", measurement.reference_timestamp),
+                ("future_timestamp", measurement.future_timestamp),
+                ("reference_price", measurement.reference_price),
+                ("future_price", measurement.future_price),
+                ("outcome_value", measurement.outcome_value),
+            )
+            if value is not None
+        },
+    )
+
+
+def measure_forward(
+    series: BarSeries,
+    spec: OutcomeSpec,
+    *,
+    symbol: str,
+    interval: Interval | str,
+    basis: PriceBasis | str,
+    timestamp: datetime,
+) -> ForwardMeasurement:
+    """Measure one market point's forward outcome under ``spec``.
+
+    The market point is ``(symbol, interval, basis, timestamp)``: the caller
+    states which instrument, bar size and price basis it is asking about,
+    and which bar's **open** time ``timestamp`` is. Those are validated
+    against ``series`` exactly as an observation's are -- same symbol, same
+    interval, same basis, and a timestamp that is a real bar of the series,
+    never the nearest one -- and the measurement is then the same one
+    :func:`evaluate_observations` performs: reference at the open of the
+    next bar, future at ``spec.future_field`` of the bar
+    ``horizon_bars - 1`` after that, forward return
+    ``future / reference - 1``.
+
+    No producer is involved. The result says what the market did after that
+    bar; it does not say who claimed what about it.
+
+    Returns a :class:`~src.evaluation.outcome.ForwardMeasurement` whose
+    status is ``EVALUATED``, ``NO_REFERENCE_BAR`` (the point is the last bar)
+    or ``INSUFFICIENT_FUTURE_DATA`` (the reference exists but the horizon
+    overruns the series).
+
+    Raises
+    ------
+    EvaluationError
+        Structural mismatch: wrong type, wrong symbol/interval/basis, a
+        timestamp that is not a bar in this series, or bars spaced closer
+        than a fixed-duration interval allows. Unlike an observation, whose
+        record has already parsed its interval and basis, a market point is
+        supplied loose, so an unparseable interval or basis or a non-datetime
+        timestamp is reported here as an ``EvaluationError`` too -- one
+        exception type for every way a request can fail to describe a series.
+    """
+    _require_series_and_spec(series, spec)
+    try:
+        interval = Interval.parse(interval)
+        basis = PriceBasis(basis)
+    except (ValueError, TypeError) as exc:
+        raise EvaluationError(f"market point: {exc}") from None
+    if not isinstance(timestamp, datetime):
+        raise EvaluationError(
+            f"market point timestamp must be a datetime, got {type(timestamp).__name__}"
+        )
+    index = _locate(
+        series, spec, _index_timestamps(series),
+        symbol=symbol, interval=interval, basis=basis, timestamp=timestamp,
+        subject="market point",
+    )
+    return _measure_at(series, spec, index)
+
+
+def _require_series_and_spec(series: BarSeries, spec: OutcomeSpec) -> None:
+    if not isinstance(series, BarSeries):
+        raise EvaluationError(
+            f"expected a BarSeries, got {type(series).__name__}; evaluation consumes "
+            "validated series, not loose bars"
+        )
+    if not isinstance(spec, OutcomeSpec):
+        raise EvaluationError(f"expected an OutcomeSpec, got {type(spec).__name__}")
+
+    if series.basis is not spec.required_basis:
+        raise EvaluationError(
+            f"outcome specification requires {spec.required_basis.value!r} prices but the "
+            f"series is {series.basis.value!r}. Basis conversion belongs to the data "
+            "layer; evaluation will not silently reinterpret prices."
+        )
+    if spec.reference is not ReferenceConvention.NEXT_BAR_OPEN:  # pragma: no cover
+        raise EvaluationError(f"unsupported reference convention {spec.reference!r}")
+
+
+def _index_timestamps(series: BarSeries) -> dict[datetime, int]:
+    # Timestamp -> index. BarSeries guarantees unique, strictly increasing
+    # timestamps, so this mapping is total and unambiguous.
+    index_of = {timestamp: index for index, timestamp in enumerate(series.timestamps)}
+    if len(index_of) != len(series.timestamps):  # pragma: no cover - BarSeries invariant
+        raise EvaluationError("series contains duplicate timestamps")
+    return index_of
+
+
+def _locate(
+    series: BarSeries,
+    spec: OutcomeSpec,
+    index_of: Mapping[datetime, int],
+    *,
+    symbol: str,
+    interval: Interval,
+    basis: PriceBasis,
+    timestamp: datetime,
+    subject: str,
+) -> int:
+    """Validate that a market point describes ``series`` and return its bar index."""
+    _require_alignment(series, spec, symbol=symbol, interval=interval, basis=basis,
+                       subject=subject)
+
+    # Exact timestamp match only. A "nearest bar" search would quietly evaluate
+    # an observation against a bar it does not describe.
+    index = index_of.get(timestamp)
+    if index is None:
+        raise EvaluationError(
+            f"{subject} at {timestamp.isoformat()} does not correspond to "
+            f"any bar in this {series.symbol} {series.interval.value} series; evaluation "
+            "never matches an approximate or nearest timestamp"
+        )
+    return index
+
+
+def _measure_at(series: BarSeries, spec: OutcomeSpec, observation_index: int) -> ForwardMeasurement:
+    """The measurement itself, by bar index. The only place the reference
+    convention, the horizon arithmetic and the forward return are written."""
+    observation_timestamp = series.timestamps[observation_index]
+
+    def measurement(status: OutcomeStatus, **fields) -> ForwardMeasurement:
+        return ForwardMeasurement(
+            observation_timestamp=observation_timestamp,
+            horizon_bars=spec.horizon_bars,
+            status=status,
+            **fields,
+        )
+
     reference_index = observation_index + 1
     if reference_index >= len(series):
-        return record(OutcomeStatus.NO_REFERENCE_BAR)
+        return measurement(OutcomeStatus.NO_REFERENCE_BAR)
 
-    _require_causal_spacing(observation, series, observation_index, reference_index)
+    _require_causal_spacing(series, observation_index, reference_index)
 
     future_index = reference_index + spec.future_offset()
     if future_index >= len(series):
         # The reference bar exists but the full horizon does not. This is not a
         # zero return, not a loss and not a win.
-        return record(
+        return measurement(
             OutcomeStatus.INSUFFICIENT_FUTURE_DATA,
             reference_timestamp=series.timestamps[reference_index],
             reference_price=series[reference_index].open,
@@ -208,7 +341,7 @@ def _evaluate_one(
             "non-positive prices, so this indicates corrupted input."
         )
 
-    return record(
+    return measurement(
         OutcomeStatus.EVALUATED,
         reference_timestamp=series.timestamps[reference_index],
         future_timestamp=series.timestamps[future_index],
@@ -219,30 +352,35 @@ def _evaluate_one(
 
 
 def _require_alignment(
-    observation: ResearchObservation, series: BarSeries, spec: OutcomeSpec
+    series: BarSeries,
+    spec: OutcomeSpec,
+    *,
+    symbol: str,
+    interval: Interval,
+    basis: PriceBasis,
+    subject: str,
 ) -> None:
     mismatches = [
         f"{label} {theirs!r} != {ours!r}"
         for label, theirs, ours in (
-            ("symbol", observation.symbol, series.symbol),
-            ("interval", observation.interval.value, series.interval.value),
-            ("basis", observation.basis.value, series.basis.value),
+            ("symbol", symbol, series.symbol),
+            ("interval", interval.value, series.interval.value),
+            ("basis", basis.value, series.basis.value),
         )
         if theirs != ours
     ]
     if mismatches:
         raise EvaluationError(
-            f"observation does not describe this series: {'; '.join(mismatches)}"
+            f"{subject} does not describe this series: {'; '.join(mismatches)}"
         )
-    if observation.basis is not spec.required_basis:
+    if basis is not spec.required_basis:
         raise EvaluationError(
-            f"observation basis {observation.basis.value!r} does not match the outcome "
+            f"{subject} basis {basis.value!r} does not match the outcome "
             f"specification's required basis {spec.required_basis.value!r}"
         )
 
 
 def _require_causal_spacing(
-    observation: ResearchObservation,
     series: BarSeries,
     observation_index: int,
     reference_index: int,
@@ -271,4 +409,4 @@ def _require_causal_spacing(
         )
 
 
-__all__ = ["evaluate_observations", "EvaluationError"]
+__all__ = ["evaluate_observations", "measure_forward", "EvaluationError"]

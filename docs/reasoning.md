@@ -249,6 +249,15 @@ cannot leave the machine.
   and no logging of reasoning calls yet.
 - No claim about the quality or usefulness of any particular model's output.
 - No live provider acceptance run has been performed yet (see Deferred).
+- No outcome awareness. Phase 12 outcome tracking exists beside this feature,
+  not inside it: the `EvidencePacket` is built from the `ResearchSnapshot`
+  alone, and the model is never shown a tracked artifact, an `OutcomeRecord`,
+  a refresh result or a 12E summary. Phase 11A explanation remains based on
+  bounded deterministic research evidence. Outcome-aware reasoning is
+  deferred to Phase 11B, and even there the model will have no authority over
+  outcome evaluation or aggregation — see
+  [docs/outcomes.md](outcomes.md) and
+  [ADR 0010](adr/0010-prospective-outcome-tracking.md).
 
 ## Testing
 
@@ -275,8 +284,9 @@ Not part of Phase 11A; not started:
 - an optional live provider smoke test
 - logging and observability of reasoning calls
 - caching or persistence of explanations
-- Phase 12 outcome tracking
-- Phase 11B outcome-aware reasoning
+- Phase 11B outcome-aware reasoning (Phase 12 outcome tracking is now built
+  — see [docs/outcomes.md](outcomes.md) — but nothing in it reaches this
+  feature)
 - news and feed content in reasoning
 - Phase 13 error analysis
 
