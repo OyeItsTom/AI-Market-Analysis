@@ -50,7 +50,8 @@ Rules the code enforces (`src/application/outcomes.py`, `src/outcomes/models.py`
 - `timestamp` is the claim time (the claimed bar's open); `data_cutoff` is
   the latest settled bar the producer had — in production, the same bar.
   `recorded_at` is the snapshot's own `built_at`, read once per Refresh.
-- Future data is consumed only on a later Refresh. Nothing polls or schedules.
+- Future data is consumed only on a later refresh — a dashboard Refresh or a
+  headless run (below). Nothing in the repository polls or schedules.
 - The reference is the open of bar T+1; horizons count bars, reference bar as
   bar one; bars T+1 … T+H are the consumed evidence and are fingerprinted.
 - An `OutcomeRecord` refuses `future_timestamp <= data_cutoff`,
@@ -151,8 +152,11 @@ append are separate durable facts.
 Tracking runs once per successful dashboard Refresh, in the Refresh branch
 after the snapshot is published, and at no other time — not on a rerun, a
 widget change, a scan or an AI explanation (`src/dashboard/app.py`,
-`track_outcomes`). Horizons are `OUTCOME_HORIZONS = (1, 5, 20)` bars on the
-snapshot's RAW basis, declared once in `src/application/outcomes.py`.
+`track_outcomes`) — and once per symbol of a headless run
+(`src/cli/outcome_refresh.py`, see [Headless collection](#headless-collection-12g)).
+Both callers make the same three application calls. Horizons are
+`OUTCOME_HORIZONS = (1, 5, 20)` bars on the snapshot's RAW basis, declared
+once in `src/application/outcomes.py`.
 
 `refresh_outcomes(snapshot, specs, ledger, now=snapshot.built_at)`:
 
@@ -187,6 +191,97 @@ terminal. The dashboard never sees a path, a key or a record.
 transaction. If it fails part-way, everything appended before the failure is
 durable and stays; the next refresh finds those records `DUPLICATE` /
 `PRESENT` and resumes. Idempotency, not atomicity.
+
+## Headless collection (12G)
+
+```
+python -m src.cli.outcome_refresh SYMBOL [SYMBOL ...] --interval {1d,1wk,1mo} [--outcome-root PATH]
+```
+
+The same refresh without Streamlit. For each symbol, in command-line order,
+the command calls exactly what the dashboard's Refresh calls —
+`default_provider()`, `build_snapshot(...)` (settled bars only, the
+application's own history window), `build_outcome_ledger(...)` and
+`refresh_outcomes(snapshot, OUTCOME_SPECS, ledger, now=snapshot.built_at)` —
+prints one line, and after the last symbol prints totals and exits. It
+decides nothing: no horizon, window, identity or measurement lives in it.
+
+**Scope.** One interval per invocation (a second interval is a second
+command); a few explicit symbols; no universe, watchlist or discovery.
+Symbols are stripped and upper-cased; a blank or duplicate symbol is a usage
+error and nothing runs.
+
+**Output.** One `key=value` line per symbol on stdout, fields in a fixed
+order, then `symbols=N ok=N failed=N`:
+
+```
+symbol=SPY interval=1d status=ok source=yfinance built_at=2026-09-16T21:05:00+00:00 tail=2026-09-15T00:00:00+00:00 bars=502 artifacts=4 artifacts_new=4 artifacts_duplicate=0 outcomes_new=0 outcomes_present=0 pending=12 ineligible=0 refused=0 out_of_window=0
+symbol=QQQ interval=1d status=failed stage=snapshot kind=provider step="market data" error=...
+symbols=2 ok=1 failed=1
+```
+
+`built_at` is the snapshot's clock (also the refresh clock); `tail` is the
+registered bar; the counts are `OutcomeRefreshResult`'s own
+(`artifacts_considered`, `artifacts_written`, `artifact_duplicates`,
+`outcomes_written`, `outcomes_already_present`, `pending`, `ineligible`,
+`refused`, `out_of_window`). Stderr carries a traceback only where the
+dashboard would print one — an unexpected snapshot failure, or any failure
+inside the refresh; a classified provider outage is its one stdout line.
+
+**Exit codes.** `0` every symbol completed; `1` at least one failed; `2`
+usage or configuration error. A symbol fails when the snapshot cannot be
+built (`stage=snapshot`, with the application's `kind`/`step`), when the
+provider returns **no settled bars** (`stage=snapshot reason=empty_snapshot`
+— the application treats an empty series as a fact, but a scheduled
+collector must not succeed forever on a mistyped or delisted symbol; nothing
+is registered), or when the refresh raises (`stage=outcomes error_type=…`,
+e.g. `LedgerCorruption`, `OutcomeRefreshError`). A failed symbol does not
+stop later symbols. Nothing is rolled back: appends that completed before a
+failure are durable, as on the dashboard, and the next run resumes over them.
+
+**Idempotency.** Running the same command again over the same settled tail
+registers nothing (`artifacts_new=0`, `artifacts_duplicate=N`) and measures
+nothing already held (`outcomes_present`); the files are byte-for-byte
+unchanged. The CLI implements none of this — artifact identity, the ledger's
+`DUPLICATE` verdict and outcome identity do — so redundant runs on weekends,
+holidays or during the session are safe, and no market calendar is needed.
+
+**Ledger location.** Without `--outcome-root` the application's default
+local ledger (`data/outcomes/`, git-ignored) is used; the CLI never names the
+path itself. Manual smoke against a temporary root, outside the suite:
+
+```
+python -m src.cli.outcome_refresh SPY \
+  --interval 1d \
+  --outcome-root /tmp/ai-market-analysis-outcomes
+```
+
+**Scheduling is outside the repository.** The command runs once and exits;
+there is no in-process scheduler, daemon or polling loop. An operator's
+scheduler invokes it:
+
+```
+scheduler (launchd / cron)  ->  python -m src.cli.outcome_refresh SPY --interval 1d  ->  exit
+```
+
+On macOS prefer **launchd** (`~/Library/LaunchAgents/*.plist` with
+`StartCalendarInterval`, `WorkingDirectory` set to the repository and the
+virtual environment's `python`): unlike cron, launchd runs a missed
+calendar job after the machine wakes. A daily run after the US close for
+`1d`, weekly for `1wk` and monthly for `1mo` is enough; more often is safe
+but only repeats duplicates and provider requests. Do not let two invocations
+run against one ledger at the same time — the store is single-writer and
+takes no lock; give each scheduled command time to finish before the next.
+
+**What local scheduling does not give you.** This machine is the only
+durable host. If it is asleep, launchd may run the job after wake; if it is
+powered off, no collection happens while it is off. A tail bar whose refresh
+never ran is **never registered later** — claims are prospective and nothing
+backfills — so a gap is a missing claim, a non-random one. Claims that were
+registered are still measured on the next run from historical settled bars,
+so outcomes are late, not lost, as long as the gap is shorter than the
+history window. No cloud durability or continuous service is claimed.
+GitHub Actions is not a fit: an ephemeral runner would not keep the ledger.
 
 ## Aggregation
 
@@ -283,6 +378,8 @@ A metric group reports exactly `sample_count`, `positive_count`,
 | Horizon not yet complete | `PENDING`, retried later |
 | Corrupt, torn or unknown-schema line | `LedgerCorruption` on read; nothing proceeds, nothing is touched |
 | Tracking fails on the dashboard | snapshot stays; one-line notice; detail to terminal |
+| A symbol fails in a headless run | `status=failed` line; later symbols still run; exit `1`; earlier appends stay |
+| Provider returns no settled bars in a headless run | `stage=snapshot reason=empty_snapshot`; nothing registered; exit `1` |
 
 ## Known limitations
 
@@ -301,7 +398,11 @@ A metric group reports exactly `sample_count`, `positive_count`,
 8. Horizons are daily-research oriented: `(1, 5, 20)` bars apply unchanged
    to `1d`, `1wk` and `1mo` refreshes, each tracked in its own partition.
 
-Not part of Phase 12 and not started: headless or scheduled collection
-(12G), a benchmarked retrospective study (Phase R), error analysis (Phase
-13), outcome-aware AI explanation (11B), any dashboard rendering of
-summaries, and any monitoring or repair tooling.
+9. Headless collection is only as continuous as the machine running it;
+   a missed run is a missing prospective claim (see
+   [Headless collection](#headless-collection-12g)).
+
+Not part of Phase 12 and not started: scheduler code or installation, a
+benchmarked retrospective study (Phase R), error analysis (Phase 13),
+outcome-aware AI explanation (11B), any dashboard rendering of summaries,
+and any monitoring or repair tooling.
