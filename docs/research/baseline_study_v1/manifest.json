@@ -1,0 +1,263 @@
+{
+  "artifacts": {
+    "observations.csv": {
+      "git_tracked": false,
+      "note": "generated raw audit artifact; kept under data/research/ and excluded from Git",
+      "sha256": "c2be1f66f10d7dc31debfaac76d67c850664166a65d1585bdd3769d0a228af76"
+    },
+    "report.md": {
+      "git_tracked": true,
+      "sha256": "7fa913dcf6da4f1472fff78a7ff3ca4bb28a51ddcd433f478feb5138bf6ca3f7"
+    },
+    "summary.csv": {
+      "git_tracked": true,
+      "sha256": "cbae399af9afd181aa02eb1d2e8a420e2be63283abe3ce60631f1662ebcd49ee"
+    }
+  },
+  "basis": "raw",
+  "benchmark_definition": "matched unconditional: all EVALUATED forward returns at exactly the timestamps where the same hypothesis produced an evaluable observation on the same symbol and horizon, state ignored (Phase 4 all_evaluated)",
+  "benchmark_policy": "matched_unconditional_v1",
+  "deltas": [
+    "mean_delta_vs_matched_unconditional",
+    "median_delta_vs_matched_unconditional"
+  ],
+  "evaluation_conventions": {
+    "future_field": "close",
+    "horizon_semantics": "reference bar is bar 1 of the horizon; future = bar (i + horizon_bars)",
+    "outcome_type": "forward_return",
+    "reference": "next_bar_open"
+  },
+  "fetch_start": "2014-09-01T00:00:00+00:00",
+  "generated_at": "2026-09-16T22:33:54.034807+00:00",
+  "git_commit": "5cc0ba19775f4a8dcb40bb1ceae69a17cc388f31",
+  "hypotheses": [
+    {
+      "canonical_form": "trend_alignment|v1|basis=any|lookback=0|params=margin=0.001|features=sma(field='close',period=20);sma(field='close',period=50)",
+      "fingerprint": "650add07184f8440",
+      "hypothesis_id": "trend_alignment",
+      "version": 1
+    },
+    {
+      "canonical_form": "momentum_in_trend_context|v1|basis=any|lookback=0|params=lower_band=45.0,upper_band=55.0|features=rsi(field='close',period=14);sma(field='close',period=20);sma(field='close',period=50)",
+      "fingerprint": "6589cb8021b76574",
+      "hypothesis_id": "momentum_in_trend_context",
+      "version": 1
+    },
+    {
+      "canonical_form": "trend_crossover|v1|basis=any|lookback=1|params=|features=sma(field='close',period=20);sma(field='close',period=50)",
+      "fingerprint": "f1126ca778e6f7ce",
+      "hypothesis_id": "trend_crossover",
+      "version": 1
+    }
+  ],
+  "interval": "1d",
+  "limitations": [
+    "Overlapping forward windows: at horizon 20, observations on adjacent daily bars share up to 19 of 20 future bars.",
+    "sample_count is a count of overlapping observations, not of independent statistical trials; episode_count is descriptive and is not an effective sample size.",
+    "RAW price basis: prices are as traded, with no split or dividend adjustment.",
+    "Dividends and other corporate actions appear in raw prices as discontinuities; max_abs_single_bar_close_return is reported per symbol so any such jump is visible, and nothing was removed, adjusted or winsorised because of it.",
+    "The provider may have revised or back-filled historical bars; results are reproducible against the fingerprinted dataset retrieved at retrieved_at, not against what the provider showed at any historical instant.",
+    "No exchange calendar: horizons are counted in bars of the fetched series, and missing sessions are neither detected nor filled.",
+    "The three hypotheses share the SMA20/SMA50 structure (momentum_in_trend_context adds RSI14; trend_crossover derives transitions from the same pair), so they are not independent confirmations of one another and no combined score is computed.",
+    "Crossover states are transitions and may be sparse; small groups are reported with their counts, not smoothed or pooled.",
+    "This is a retrospective study of one retrieved dataset; it differs in purpose from the prospective Phase 12 ledger, which records claims at the time they were made.",
+    "No transaction costs, spreads, fills, positions or capital are modelled; a forward return is a property of the market, not of a strategy.",
+    "Nothing here is a profitability, edge, accuracy or performance claim.",
+    "No inferential statistics: no p-value, confidence interval, significance test or hit rate is computed or implied."
+  ],
+  "metric_policy": "descriptive_v1",
+  "metrics": [
+    "sample_count",
+    "mean_forward_return",
+    "median_forward_return",
+    "min_forward_return",
+    "max_forward_return",
+    "positive_count",
+    "negative_count",
+    "zero_count",
+    "episode_count"
+  ],
+  "observation_end": "2025-01-01T00:00:00+00:00",
+  "observation_start": "2015-01-01T00:00:00+00:00",
+  "outcome_data_end": "2025-03-01T00:00:00+00:00",
+  "outcome_specs": [
+    {
+      "canonical_form": "type=OutcomeType:forward_return|horizon_bars=1|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+      "fingerprint": "83e9dabf9b4e27de",
+      "horizon_bars": 1
+    },
+    {
+      "canonical_form": "type=OutcomeType:forward_return|horizon_bars=5|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+      "fingerprint": "b586481caf972d58",
+      "horizon_bars": 5
+    },
+    {
+      "canonical_form": "type=OutcomeType:forward_return|horizon_bars=20|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+      "fingerprint": "a040ca488aa3f51f",
+      "horizon_bars": 20
+    }
+  ],
+  "overlap_caveat": "Forward windows may overlap: at horizon 20, observations on adjacent daily bars can share 19 of 20 future bars. sample_count is not a number of independent statistical trials, and no p-value, confidence interval or significance test is computed.",
+  "retrieved_at": "2026-09-16T22:32:33.017027+00:00",
+  "retrospective_caveat": "This study evaluates the historical dataset the provider returned at retrieval time. The provider may have revised or back-filled bars since the dates studied, so the study is reproducible against the fingerprinted retrieved dataset and does not establish what the provider displayed at any historical instant. Phase 12's prospective ledger serves that audit purpose.",
+  "source": "yfinance",
+  "study_definition": {
+    "basis": "raw",
+    "benchmark_policy": "matched_unconditional_v1",
+    "deltas": [
+      "mean_delta_vs_matched_unconditional",
+      "median_delta_vs_matched_unconditional"
+    ],
+    "fetch_start": "2014-09-01T00:00:00+00:00",
+    "hypotheses": [
+      {
+        "canonical_form": "trend_alignment|v1|basis=any|lookback=0|params=margin=0.001|features=sma(field='close',period=20);sma(field='close',period=50)",
+        "fingerprint": "650add07184f8440",
+        "hypothesis_id": "trend_alignment",
+        "version": 1
+      },
+      {
+        "canonical_form": "momentum_in_trend_context|v1|basis=any|lookback=0|params=lower_band=45.0,upper_band=55.0|features=rsi(field='close',period=14);sma(field='close',period=20);sma(field='close',period=50)",
+        "fingerprint": "6589cb8021b76574",
+        "hypothesis_id": "momentum_in_trend_context",
+        "version": 1
+      },
+      {
+        "canonical_form": "trend_crossover|v1|basis=any|lookback=1|params=|features=sma(field='close',period=20);sma(field='close',period=50)",
+        "fingerprint": "f1126ca778e6f7ce",
+        "hypothesis_id": "trend_crossover",
+        "version": 1
+      }
+    ],
+    "interval": "1d",
+    "metric_policy": "descriptive_v1",
+    "metrics": [
+      "sample_count",
+      "mean_forward_return",
+      "median_forward_return",
+      "min_forward_return",
+      "max_forward_return",
+      "positive_count",
+      "negative_count",
+      "zero_count",
+      "episode_count"
+    ],
+    "minimum_warmup_bars": 51,
+    "observation_end": "2025-01-01T00:00:00+00:00",
+    "observation_start": "2015-01-01T00:00:00+00:00",
+    "outcome_data_end": "2025-03-01T00:00:00+00:00",
+    "outcome_specs": [
+      {
+        "canonical_form": "type=OutcomeType:forward_return|horizon_bars=1|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+        "fingerprint": "83e9dabf9b4e27de",
+        "horizon_bars": 1
+      },
+      {
+        "canonical_form": "type=OutcomeType:forward_return|horizon_bars=5|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+        "fingerprint": "b586481caf972d58",
+        "horizon_bars": 5
+      },
+      {
+        "canonical_form": "type=OutcomeType:forward_return|horizon_bars=20|reference=ReferenceConvention:next_bar_open|future_field=PriceField:close|basis=PriceBasis:raw",
+        "fingerprint": "a040ca488aa3f51f",
+        "horizon_bars": 20
+      }
+    ],
+    "scheme": "research.study_definition",
+    "scheme_version": 1,
+    "study_id": "baseline_study",
+    "study_schema_version": 1,
+    "study_version": 1,
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "IWM",
+      "TLT",
+      "GLD"
+    ]
+  },
+  "study_fingerprint": "1bd69ea2e4b11e8858868f8f4d353ca5442f285b2a43fdb09c28f6569ae00261",
+  "study_id": "baseline_study",
+  "study_schema_version": 1,
+  "study_version": 1,
+  "symbols": [
+    {
+      "bars_count": 2640,
+      "bars_fingerprint": "46e79c9fb89cdcc9ebeb78e23214d2a3603f378861d5915ad3c007bb3a8d17ba",
+      "first_observation_timestamp": "2015-01-02T05:00:00+00:00",
+      "first_timestamp": "2014-09-02T04:00:00+00:00",
+      "last_observation_timestamp": "2024-12-31T05:00:00+00:00",
+      "last_timestamp": "2025-02-28T05:00:00+00:00",
+      "max_abs_single_bar_close_return": 0.10942373540494488,
+      "observation_bars": 2516,
+      "outcome_buffer_bars": 39,
+      "symbol": "SPY",
+      "warmup_bars": 85
+    },
+    {
+      "bars_count": 2640,
+      "bars_fingerprint": "d8e1437142f09262d9cb67b53420470f4fffe0e450ed73b446e5edbdd00778a8",
+      "first_observation_timestamp": "2015-01-02T05:00:00+00:00",
+      "first_timestamp": "2014-09-02T04:00:00+00:00",
+      "last_observation_timestamp": "2024-12-31T05:00:00+00:00",
+      "last_timestamp": "2025-02-28T05:00:00+00:00",
+      "max_abs_single_bar_close_return": 0.1197878430113809,
+      "observation_bars": 2516,
+      "outcome_buffer_bars": 39,
+      "symbol": "QQQ",
+      "warmup_bars": 85
+    },
+    {
+      "bars_count": 2640,
+      "bars_fingerprint": "71d4930ad957a9683a4137b0afac9f91a52c2f778a0cef95845519ac9eb5903b",
+      "first_observation_timestamp": "2015-01-02T05:00:00+00:00",
+      "first_timestamp": "2014-09-02T04:00:00+00:00",
+      "last_observation_timestamp": "2024-12-31T05:00:00+00:00",
+      "last_timestamp": "2025-02-28T05:00:00+00:00",
+      "max_abs_single_bar_close_return": 0.13266927523370964,
+      "observation_bars": 2516,
+      "outcome_buffer_bars": 39,
+      "symbol": "IWM",
+      "warmup_bars": 85
+    },
+    {
+      "bars_count": 2640,
+      "bars_fingerprint": "5c50da834a9dbce7c9e7a1c8508ba00137bd56ea6c6595b647f48fae6647da89",
+      "first_observation_timestamp": "2015-01-02T05:00:00+00:00",
+      "first_timestamp": "2014-09-02T04:00:00+00:00",
+      "last_observation_timestamp": "2024-12-31T05:00:00+00:00",
+      "last_timestamp": "2025-02-28T05:00:00+00:00",
+      "max_abs_single_bar_close_return": 0.07519553539436075,
+      "observation_bars": 2516,
+      "outcome_buffer_bars": 39,
+      "symbol": "TLT",
+      "warmup_bars": 85
+    },
+    {
+      "bars_count": 2640,
+      "bars_fingerprint": "d0d021bcbeefc8b983254b002ccb3382cefc71828ee872c3cd42ec2996df29c6",
+      "first_observation_timestamp": "2015-01-02T05:00:00+00:00",
+      "first_timestamp": "2014-09-02T04:00:00+00:00",
+      "last_observation_timestamp": "2024-12-31T05:00:00+00:00",
+      "last_timestamp": "2025-02-28T05:00:00+00:00",
+      "max_abs_single_bar_close_return": 0.05369440853432972,
+      "observation_bars": 2516,
+      "outcome_buffer_bars": 39,
+      "symbol": "GLD",
+      "warmup_bars": 85
+    }
+  ],
+  "universe": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "TLT",
+    "GLD"
+  ],
+  "window_semantics": {
+    "observation": "[observation_start, observation_end): the classification window",
+    "outcome_buffer": "[observation_end, outcome_data_end): read only to measure forward outcomes of earlier observations; never classified",
+    "untouched_future_begins": "2025-03-01T00:00:00+00:00",
+    "warmup": "[fetch_start, observation_start): feature warm-up only, never a study observation"
+  }
+}
