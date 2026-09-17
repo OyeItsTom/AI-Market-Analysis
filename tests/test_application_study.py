@@ -268,14 +268,19 @@ class TestDefaults:
 
     def test_the_default_root_is_redirected_under_pytest(self, tmp_path, definition):
         """The conftest guard: a run with no ``out_root`` lands in the test's
-        ``tmp_path``, never in the repository's ``data/research``."""
+        ``tmp_path``, never in the repository's ``data/research``.
+
+        The repository's research root may legitimately hold a frozen live
+        study (``data/research/baseline_study_v1/``, git-ignored), so the
+        check is that *this* synthetic run's directory never appeared under
+        the real root -- not that the root is absent."""
         from src.application import study as application_study
 
         run = run_baseline_study(SyntheticProvider(), git_commit=GIT, now=clock_at(CLOCK),
                                  definition=definition)
         assert run.output_dir == application_study.DEFAULT_RESEARCH_ROOT / definition.label
         assert tmp_path in run.output_dir.parents
-        assert not (REPO_DATA / "research").exists()
+        assert not (REPO_DATA / "research" / definition.label).exists()
 
     def test_sha256_text_is_over_exact_bytes(self):
         assert sha256_text("a\n") == hashlib.sha256(b"a\n").hexdigest()
