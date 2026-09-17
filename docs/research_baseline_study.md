@@ -284,6 +284,17 @@ duplicates another, whether neutral states dominate, whether behaviour is
 unstable across symbols, whether coverage is poor, or whether a state shows no
 separation. None of those is answered, or acted on, in Phase R.
 
+## Status — first frozen result
+
+Baseline Study v1 was run exactly once from methodology commit
+`5cc0ba19775f4a8dcb40bb1ceae69a17cc388f31` (data retrieved
+2026-09-16T22:32:33Z from `yfinance`) and mechanically validated. The tracked
+result — `manifest.json`, `summary.csv`, `report.md` (byte-identical to the
+run output) and the human-written `interpretation.md` — lives under
+[docs/research/baseline_study_v1/](research/baseline_study_v1/). The raw
+`observations.csv` stays under git-ignored `data/research/`. Nothing above
+this section was changed by the result; a methodology change is version 2.
+
 ## References
 
 Patterns borrowed as ideas only, with no dependency or code: Freqtrade's

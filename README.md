@@ -28,7 +28,8 @@ implemented (12A–12F).**
 **Phase 12G — Headless outcome collection (`python -m src.cli.outcome_refresh`):
 implemented.**
 **Phase R — Baseline Study v1 (`python -m src.cli.baseline_study`): methodology
-implemented and frozen; no result generated yet.**
+frozen (commit `5cc0ba1`), run once, mechanically validated; result and
+interpretation under `docs/research/baseline_study_v1/`.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -140,7 +141,14 @@ described beside a matched unconditional benchmark at the Phase 12 horizons.
 The methodology is frozen in code and fingerprinted before any real-data run;
 the command takes only `--git-commit` and `--out`. It computes descriptive
 counts, means, medians, extremes and deltas over overlapping, non-independent
-samples — no hit rate, no significance, no profitability. See
+samples — no hit rate, no significance, no profitability. The study has been
+run once from the frozen methodology commit and mechanically validated; the
+tracked result (manifest, summary, generated report) and a separate
+human-written interpretation are under
+`docs/research/baseline_study_v1/`. The interpretation is descriptive only:
+it states what the current hypotheses' states were followed by relative to a
+matched unconditional sample, per symbol and horizon, and makes no claim of
+profitability, edge or significance. See
 **[docs/research_baseline_study.md](docs/research_baseline_study.md)** and
 **[ADR 0011](docs/adr/0011-first-benchmarked-retrospective-study.md)**.
 
@@ -353,13 +361,13 @@ pull requests.
 ## Roadmap
 
 Phase 12 is implemented through 12G (the headless collector; scheduling it is
-operator guidance, not code). Phase R's methodology is implemented and frozen;
-its first real-data run and results gate follow. Planned next, in order:
+operator guidance, not code). Phase R's frozen methodology has produced its
+first result and interpretation (`docs/research/baseline_study_v1/`). Planned
+next, in order:
 
-1. **Phase R** — results gate: one frozen run, tracked manifest/summary/report,
-   human interpretation and Phase 13 questions
-2. **Phase 13** — error analysis / controlled improvement
-3. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
+1. **Phase 13** — error analysis / controlled improvement, starting from the
+   evidence-backed questions in the Phase R interpretation
+2. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 
 Anything beyond that — alternative storage, a second provider, intraday
