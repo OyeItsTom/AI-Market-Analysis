@@ -74,3 +74,37 @@ def test_the_set_must_be_complete_and_textual(tmp_path, texts):
     with pytest.raises(ArtifactError):
         write_artifacts(tmp_path, texts)
     assert not list(tmp_path.iterdir())
+
+
+# -- Phase 13A: a study's own artifact set, and reading a frozen study back ------------------
+
+
+def test_a_named_artifact_set_is_written_and_read_back_exactly(tmp_path):
+    from src.research import read_artifacts
+
+    names = ("manifest.json", "diagnostics.csv", "episodes.csv", "report.md")
+    texts = {"manifest.json": "{}\n", "diagnostics.csv": "a\r\nb\n", "episodes.csv": "x\n", "report.md": "# r\n"}
+    written = write_artifacts(tmp_path / "run", texts, names)
+    assert list(written) == list(names)
+    assert read_artifacts(tmp_path / "run", names) == texts
+    assert existing_artifacts(tmp_path / "run", names) == names
+    # Seen through the Phase R default set, only the two shared names exist.
+    assert existing_artifacts(tmp_path / "run") == ("manifest.json", "report.md")
+
+
+def test_named_set_must_be_complete_and_fresh(tmp_path):
+    names = ("a.txt", "b.txt")
+    with pytest.raises(ArtifactError, match="exactly"):
+        write_artifacts(tmp_path, {"a.txt": "1"}, names)
+    write_artifacts(tmp_path, {"a.txt": "1", "b.txt": "2"}, names)
+    with pytest.raises(ArtifactError, match="not overwritten"):
+        write_artifacts(tmp_path, {"a.txt": "1", "b.txt": "2"}, names)
+    with pytest.raises(ArtifactError, match="unique plain file names"):
+        write_artifacts(tmp_path / "z", {"a.txt": "1"}, ("a.txt", "a.txt"))
+
+
+def test_reading_a_missing_artifact_is_an_error(tmp_path):
+    from src.research import read_artifacts
+
+    with pytest.raises(ArtifactError, match="does not exist"):
+        read_artifacts(tmp_path, ("missing.csv",))

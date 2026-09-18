@@ -1,4 +1,4 @@
-"""Phase R: the first benchmarked retrospective research study.
+"""Phase R and Phase 13A: the frozen baseline study and its error analysis.
 
 This package turns the machinery that already exists -- Phase 2 features,
 Phase 3 hypotheses, Phase 4 outcome evaluation -- on a **fixed** universe and
@@ -22,8 +22,25 @@ from .artifacts import (
     ARTIFACT_NAMES,
     ArtifactError,
     existing_artifacts,
+    read_artifacts,
     require_fresh,
     write_artifacts,
+)
+from .error_analysis import (
+    ERROR_ANALYSIS_V1,
+    SOURCE_ARTIFACT_NAMES,
+    ErrorAnalysisDefinition,
+    ErrorAnalysisError,
+    ErrorAnalysisResult,
+    run_error_analysis,
+)
+from .error_analysis_render import (
+    ERROR_ANALYSIS_ARTIFACT_NAMES,
+    error_analysis_manifest_payload,
+    render_error_analysis_manifest,
+    render_error_analysis_report,
+    render_diagnostics_csv,
+    render_episodes_csv,
 )
 from .definition import (
     BASELINE_STUDY_V1,
@@ -79,8 +96,21 @@ __all__ = [
     "ARTIFACT_NAMES",
     "ArtifactError",
     "existing_artifacts",
+    "read_artifacts",
     "require_fresh",
     "write_artifacts",
+    "ERROR_ANALYSIS_V1",
+    "SOURCE_ARTIFACT_NAMES",
+    "ErrorAnalysisDefinition",
+    "ErrorAnalysisError",
+    "ErrorAnalysisResult",
+    "run_error_analysis",
+    "ERROR_ANALYSIS_ARTIFACT_NAMES",
+    "error_analysis_manifest_payload",
+    "render_error_analysis_manifest",
+    "render_error_analysis_report",
+    "render_diagnostics_csv",
+    "render_episodes_csv",
     "BASELINE_STUDY_V1",
     "BENCHMARK_POLICY",
     "METRIC_POLICY",

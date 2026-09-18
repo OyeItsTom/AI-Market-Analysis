@@ -33,6 +33,12 @@ from .paper import (
     build_provenance,
     parse_notional,
 )
+from .error_analysis import (
+    DEFAULT_ERROR_ANALYSIS_SOURCE,
+    ERROR_ANALYSIS_LABEL,
+    ErrorAnalysisRun,
+    run_error_analysis_study,
+)
 from .study import (
     DEFAULT_RESEARCH_ROOT,
     STUDY_LABEL,
@@ -95,4 +101,8 @@ __all__ = [
     "StudyRun",
     "run_baseline_study",
     "validate_git_commit",
+    "DEFAULT_ERROR_ANALYSIS_SOURCE",
+    "ERROR_ANALYSIS_LABEL",
+    "ErrorAnalysisRun",
+    "run_error_analysis_study",
 ]
