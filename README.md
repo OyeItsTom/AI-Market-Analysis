@@ -30,6 +30,13 @@ implemented.**
 **Phase R — Baseline Study v1 (`python -m src.cli.baseline_study`): methodology
 frozen (commit `5cc0ba1`), run once, mechanically validated; result and
 interpretation under `docs/research/baseline_study_v1/`.**
+**Phase 13A — Error Analysis v1 (`python -m src.cli.error_analysis`): diagnostic
+methodology frozen (commit `9ce8dab`), run once, mechanically validated;
+offline, zero-network, read-only against the frozen Baseline Study v1
+artifacts; no hypothesis change; result and independently reviewed
+interpretation under `docs/research/error_analysis_v1/` — no computational
+Phase 13B change justified; documentation hardening is the only nominated
+follow-up.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -213,11 +220,14 @@ src/outcomes/            prospective outcome tracking (append-only, no scoring)
 ├── store.py             JsonlOutcomeLedger — data/outcomes/<sym>/<interval>/<basis>/
 └── summary.py           summarize_outcomes — descriptive per-partition aggregates
 
-src/research/            Phase R baseline study (frozen definition, engine, renderers)
+src/research/            Phase R baseline study + Phase 13A error analysis
 ├── definition.py        StudyDefinition + BASELINE_STUDY_V1 + study fingerprint
 ├── study.py             windows, batch evaluation, matched benchmark, descriptive groups
 ├── render.py            manifest / summary.csv / observations.csv / report.md
-└── artifacts.py         the one place Phase R writes files (never overwrites a run)
+├── error_analysis.py    ERROR_ANALYSIS_V1: hash-pinned source contract, episodes, gate
+│                        decomposition, fixed segments, class signs, crossover events
+├── error_analysis_render.py  manifest / diagnostics.csv / episodes.csv / report.md
+└── artifacts.py         the one place the research tier reads/writes files (never overwrites)
 
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
@@ -241,6 +251,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/reasoning.md](docs/reasoning.md)** (Phase 11A),
 **[docs/outcomes.md](docs/outcomes.md)** (Phase 12),
 **[docs/research_baseline_study.md](docs/research_baseline_study.md)** (Phase R),
+**[docs/research_error_analysis.md](docs/research_error_analysis.md)** (Phase 13A),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -254,7 +265,8 @@ scanner), **[ADR 0009](docs/adr/0009-grounded-reasoning.md)** (grounded AI
 explanation), **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**
 (prospective outcome tracking and deterministic aggregation),
 **[ADR 0011](docs/adr/0011-first-benchmarked-retrospective-study.md)** (first
-benchmarked retrospective study).
+benchmarked retrospective study), **[ADR 0012](docs/adr/0012-hypothesis-error-analysis.md)**
+(hypothesis error analysis over the frozen baseline).
 
 ### The core idea
 
@@ -366,7 +378,13 @@ first result and interpretation (`docs/research/baseline_study_v1/`). Planned
 next, in order:
 
 1. **Phase 13** — error analysis / controlled improvement, starting from the
-   evidence-backed questions in the Phase R interpretation
+   evidence-backed questions in the Phase R interpretation. 13A (diagnosis
+   only, over the frozen Phase R artifacts, no network, no hypothesis change;
+   five fixed two-year segments; decision aids are descriptive rules, not
+   tests; data from 2025-03-01 onward stays untouched) has had its single
+   frozen run and interpretation (`docs/research/error_analysis_v1/`): no
+   computational 13B change is justified; the nominated follow-up is
+   documentation hardening only
 2. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 

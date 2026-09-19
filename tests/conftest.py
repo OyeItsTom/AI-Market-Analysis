@@ -186,3 +186,20 @@ def _research_root_is_temporary(tmp_path, monkeypatch):
     import src.application.study as study
 
     monkeypatch.setattr(study, "DEFAULT_RESEARCH_ROOT", tmp_path / "research-default")
+
+
+@pytest.fixture(autouse=True)
+def _error_analysis_source_is_temporary(tmp_path, monkeypatch):
+    """No test may read the repository's frozen Baseline Study v1 artifacts.
+
+    The Phase 13A runner reads the frozen study from the application default
+    source when no ``--source`` / ``source_root`` is given. Every Phase 13A
+    test passes a synthetic source explicitly; this redirects the default
+    into ``tmp_path`` so that no suite, present or future, can analyse the
+    real frozen result under pytest.
+    """
+    import src.application.error_analysis as error_analysis
+
+    monkeypatch.setattr(
+        error_analysis, "DEFAULT_ERROR_ANALYSIS_SOURCE", tmp_path / "error-analysis-source-default"
+    )

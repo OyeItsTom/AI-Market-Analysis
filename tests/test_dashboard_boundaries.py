@@ -1215,12 +1215,17 @@ RESEARCH_FILES = python_files("src/research")
 RESEARCH_ARTIFACT_STORE = SRC / "research" / "artifacts.py"
 
 
-def test_the_research_package_exists_with_its_four_modules_and_the_store():
+def test_the_research_package_exists_with_its_modules_and_the_store():
+    """Phase R (definition, study, render) and Phase 13A (error_analysis and its
+    renderer) share one store; nothing else lives in the package."""
     assert sorted(p.name for p in RESEARCH_FILES) == [
-        "__init__.py", "artifacts.py", "definition.py", "render.py", "study.py",
+        "__init__.py", "artifacts.py", "definition.py", "error_analysis.py",
+        "error_analysis_render.py", "render.py", "study.py",
     ]
     assert (SRC / "cli" / "baseline_study.py") in CLI_FILES
+    assert (SRC / "cli" / "error_analysis.py") in CLI_FILES
     assert (SRC / "application" / "study.py") in APPLICATION_FILES
+    assert (SRC / "application" / "error_analysis.py") in APPLICATION_FILES
 
 
 @pytest.mark.parametrize("path", RESEARCH_FILES, ids=lambda p: p.name)
@@ -1260,7 +1265,9 @@ def test_only_the_research_artifact_store_touches_the_filesystem(path):
         )
     ]
     if path == RESEARCH_ARTIFACT_STORE:
-        assert set(touches) == {"mkdir", "write_text"}, touches
+        # Write once (Phase R and 13A outputs) and read a frozen study back
+        # as exact bytes (13A input); nothing else.
+        assert set(touches) == {"mkdir", "write_text", "read_bytes"}, touches
     else:
         assert not touches, f"{path.name} performs file I/O via {touches}"
         assert "pathlib" not in imported_modules(path) or path.name == "artifacts.py"
@@ -1307,4 +1314,46 @@ def test_the_study_orchestration_requests_settled_bars_and_runs_no_git():
     text = (SRC / "application" / "study.py").read_text()
     assert "include_unsettled=False" in text
     for forbidden in ("subprocess", "git rev-parse", "os.popen", "yfinance"):
+        assert forbidden not in text, forbidden
+
+
+# -- Phase 13A: zero-network, read-only over the frozen study --------------------------
+
+ERROR_ANALYSIS_FILES = (
+    SRC / "research" / "error_analysis.py",
+    SRC / "research" / "error_analysis_render.py",
+    SRC / "application" / "error_analysis.py",
+    SRC / "cli" / "error_analysis.py",
+)
+
+
+@pytest.mark.parametrize("path", ERROR_ANALYSIS_FILES, ids=lambda p: p.name)
+def test_error_analysis_touches_no_provider_or_network(path):
+    names = imported_modules(path)
+    for package in ("src.data.providers", "src.data.provider", "yfinance", "urllib", "requests",
+                    "socket", "http", "subprocess"):
+        assert not imports_package(names, package), f"{path.name} imports {package}"
+    used = code_identifiers(path)
+    for identifier in ("get_bars", "default_provider", "YahooFinanceProvider", "MarketDataProvider",
+                       "build_snapshot"):
+        assert identifier not in used, f"{path.name} uses {identifier}"
+
+
+def test_error_analysis_engine_reads_returns_and_never_computes_them():
+    """Only regrouping of frozen values: no price field is read and the only
+    binary operations are the delta subtraction, share ratios and index/position
+    arithmetic; no multiplication or power."""
+    tree = ast.parse((SRC / "research" / "error_analysis.py").read_text())
+    price_reads = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+                   and n.attr in {"open", "high", "low", "close", "volume"}}
+    assert not price_reads, price_reads
+    forbidden = [ast.unparse(n) for n in ast.walk(tree) if isinstance(n, ast.BinOp)
+                 and isinstance(n.op, (ast.Mult, ast.Pow))]
+    assert not forbidden, forbidden
+
+
+def test_error_analysis_cli_is_a_caller_of_the_application_only():
+    text = (SRC / "cli" / "error_analysis.py").read_text()
+    for forbidden in ("src.research", "src.strategies", "src.evaluation", "src.data", "src.outcomes",
+                      "pathlib", "--symbol", "--segment", "--threshold", "--horizon", "--metric"):
         assert forbidden not in text, forbidden
