@@ -31,8 +31,12 @@ implemented.**
 frozen (commit `5cc0ba1`), run once, mechanically validated; result and
 interpretation under `docs/research/baseline_study_v1/`.**
 **Phase 13A — Error Analysis v1 (`python -m src.cli.error_analysis`): diagnostic
-methodology implemented; offline, zero-network, read-only against the frozen
-Baseline Study v1 artifacts; no hypothesis change; no result generated yet.**
+methodology frozen (commit `9ce8dab`), run once, mechanically validated;
+offline, zero-network, read-only against the frozen Baseline Study v1
+artifacts; no hypothesis change; result and independently reviewed
+interpretation under `docs/research/error_analysis_v1/` — no computational
+Phase 13B change justified; documentation hardening is the only nominated
+follow-up.**
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -377,8 +381,10 @@ next, in order:
    evidence-backed questions in the Phase R interpretation. 13A (diagnosis
    only, over the frozen Phase R artifacts, no network, no hypothesis change;
    five fixed two-year segments; decision aids are descriptive rules, not
-   tests; data from 2025-03-01 onward stays untouched) is implemented and
-   awaits its single frozen run
+   tests; data from 2025-03-01 onward stays untouched) has had its single
+   frozen run and interpretation (`docs/research/error_analysis_v1/`): no
+   computational 13B change is justified; the nominated follow-up is
+   documentation hardening only
 2. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 

@@ -121,6 +121,20 @@ profitability, edge, accuracy or significance claim; no selection of a Phase
 13B change. Interpretation happens after a frozen real run, in a separate
 human-written document.
 
+## Status — first frozen result
+
+Error Analysis v1 was run exactly once from methodology commit
+`9ce8dab743bde6ace5737ab8e815f430d3b60c76` (generated
+2026-09-18T22:01:15Z, offline, `network: none`) and mechanically validated.
+The tracked result — `manifest.json`, `diagnostics.csv`, `episodes.csv`,
+`report.md` (byte-identical to the run output) and the human-written,
+independently reviewed `interpretation.md` — lives under
+[docs/research/error_analysis_v1/](research/error_analysis_v1/). The
+interpretation's conclusion is that no computational Phase 13B change is
+justified; the only nominated follow-up is documentation hardening of what
+BULLISH/BEARISH name, changing no computation. Nothing above this section
+was changed by the result; a methodology change is version 2.
+
 ## References
 
 Only Qlib's habit of comparing variants on identical samples is borrowed, as
