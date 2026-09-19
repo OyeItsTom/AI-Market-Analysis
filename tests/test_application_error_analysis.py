@@ -175,16 +175,27 @@ class TestDeterminism:
 
 class TestDefaults:
     def test_defaults_point_at_the_research_tree_and_are_redirected_under_pytest(self, tmp_path):
+        """The conftest guards: a run with no roots can neither read the real
+        frozen study nor write under the repository.
+
+        The repository's research root may legitimately hold frozen live
+        results (``data/research/baseline_study_v1/`` and
+        ``data/research/error_analysis_v1/``, git-ignored), so the check is
+        that *this* synthetic run touched nothing under the real root -- not
+        that the real result directory is absent."""
         assert ERROR_ANALYSIS_LABEL == "error_analysis_v1"
         assert DEFAULT_ERROR_ANALYSIS_SOURCE == REPO_DATA / "research" / "baseline_study_v1"
-        # Under pytest the conftest guards redirect both defaults into tmp_path,
-        # so a run with no roots can neither read the real frozen study nor
-        # write under the repository.
+        # Under pytest the conftest guards redirect both defaults into tmp_path.
         assert tmp_path in application_module.DEFAULT_ERROR_ANALYSIS_SOURCE.parents
+        assert tmp_path in application_module.baseline.DEFAULT_RESEARCH_ROOT.parents
+        real_root = REPO_DATA / "research"
+        before = sorted(real_root.rglob("*")) if real_root.exists() else []
         with pytest.raises(ApplicationError) as excinfo:
             run_error_analysis_study(git_commit=GIT, now=clock_at(CLOCK))
         assert excinfo.value.kind is FailureKind.REQUEST  # the redirected default source is empty
-        assert not (REPO_DATA / "research" / "error_analysis_v1").exists()
+        after = sorted(real_root.rglob("*")) if real_root.exists() else []
+        assert after == before
+        assert not (application_module.baseline.DEFAULT_RESEARCH_ROOT / ERROR_ANALYSIS_LABEL).exists()
 
     def test_no_provider_is_imported(self):
         import src.application.error_analysis as app
