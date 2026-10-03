@@ -37,6 +37,12 @@ artifacts; no hypothesis change; result and independently reviewed
 interpretation under `docs/research/error_analysis_v1/` — no computational
 Phase 13B change justified; documentation hardening is the only nominated
 follow-up.**
+**M1 — Prospective Collection v1 (`python -m src.cli.prospective`): infrastructure
+implemented, NOT ACTIVATED.** No claim has been collected and no scheduler is
+installed. Activation remains blocked on a frozen M2 future-validation
+pre-registration, explicit human approval and local scheduler setup. See
+[docs/prospective_collection.md](docs/prospective_collection.md) and
+[ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md).
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -229,6 +235,12 @@ src/research/            Phase R baseline study + Phase 13A error analysis
 ├── error_analysis_render.py  manifest / diagnostics.csv / episodes.csv / report.md
 └── artifacts.py         the one place the research tier reads/writes files (never overwrites)
 
+src/prospective/         M1 Prospective Collection v1 (implemented, NOT activated)
+├── definition.py        COLLECTION_V1 + fingerprint; ET window, timestamp and gap rules
+├── records.py           activation manifest + run log records (Level 1 only)
+├── store.py             data/prospective/v1: write-once manifest, run log, root lock
+└── environment.py       read-only git probe + dependency versions for activation
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -252,6 +264,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/outcomes.md](docs/outcomes.md)** (Phase 12),
 **[docs/research_baseline_study.md](docs/research_baseline_study.md)** (Phase R),
 **[docs/research_error_analysis.md](docs/research_error_analysis.md)** (Phase 13A),
+**[docs/prospective_collection.md](docs/prospective_collection.md)** (M1, not activated),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -266,7 +279,9 @@ explanation), **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**
 (prospective outcome tracking and deterministic aggregation),
 **[ADR 0011](docs/adr/0011-first-benchmarked-retrospective-study.md)** (first
 benchmarked retrospective study), **[ADR 0012](docs/adr/0012-hypothesis-error-analysis.md)**
-(hypothesis error analysis over the frozen baseline).
+(hypothesis error analysis over the frozen baseline),
+**[ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md)** (prospective
+collection and the reserved holdout).
 
 ### The core idea
 
@@ -385,7 +400,14 @@ next, in order:
    frozen run and interpretation (`docs/research/error_analysis_v1/`): no
    computational 13B change is justified; the nominated follow-up is
    documentation hardening only
-2. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
+2. **M1 — Prospective Collection v1** — implemented, not activated: a frozen
+   collection (SPY, QQQ, IWM, TLT, GLD; `1d` RAW; the three existing
+   hypotheses) into its own ledger root, collected only between 00:30 and
+   09:00 America/New_York, never backfilled, with a blind Level-1 health
+   report. Data from 2025-03-01 to activation stays reserved
+3. **M2 — future-validation pre-registration** — must be frozen and
+   remote-durable before M1 is activated
+4. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 
 Anything beyond that — alternative storage, a second provider, intraday

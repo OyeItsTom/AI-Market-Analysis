@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Prospective Collection v1 - launchd TEMPLATE. Not installed by the repository.
+
+  Install only after an explicitly approved activation (docs/prospective_collection.md):
+    1. copy to ~/Library/LaunchAgents/com.ai-market-analysis.prospective-collect.plist
+    2. replace every __PLACEHOLDER__ with an absolute path on this machine
+    3. mkdir -p __REPOSITORY__/data/prospective/logs   (git-ignored; outside the v1 root)
+    4. launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ai-market-analysis.prospective-collect.plist
+
+  StartCalendarInterval uses this MACHINE'S LOCAL TIME, not New York time.
+  The application is the authority on the window: it collects only when
+  00:30 <= America/New_York time < 09:00 and refuses any other trigger before
+  constructing a provider. Choose local times so that at least one trigger
+  (preferably an early one and a later retry) falls inside that window in
+  every week of the year - US and local daylight-saving changes happen on
+  different dates (e.g. US/UK differ for 2-3 weeks each March and
+  October/November).
+
+  The values below are EXAMPLES ONLY FOR A MACHINE SET TO America/New_York:
+  01:00 (early collection) and 07:30 (retry). DO NOT copy them unchanged to a
+  machine in another timezone: on a UK machine 01:00 local is the previous
+  evening in New York and is refused every day. Map your chosen local times
+  to ET when installing (as an example only, checked for 2026: 06:00 and
+  12:30 UK local both land inside the window all year; DST rules can change,
+  so verify).
+
+  A retry is idempotent only when the provider returns the same bar content.
+  If the provider revises the already-recorded bar between runs, the retry
+  fails loudly (ledger CONFLICT, status refresh_failure) instead of replacing
+  the claim, and the original claim's later outcomes may be refused. A retry
+  never rewrites the original claim and never backfills a missed day.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ai-market-analysis.prospective-collect</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__VENV_PYTHON__</string>
+        <string>-m</string>
+        <string>src.cli.prospective</string>
+        <string>collect</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPOSITORY__</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>1</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>7</integer>
+            <key>Minute</key>
+            <integer>30</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>__REPOSITORY__/data/prospective/logs/collect.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPOSITORY__/data/prospective/logs/collect.err.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

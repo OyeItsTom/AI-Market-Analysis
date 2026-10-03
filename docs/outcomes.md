@@ -270,11 +270,28 @@ scheduler (launchd / cron)  ->  python -m src.cli.outcome_refresh SPY --interval
 On macOS prefer **launchd** (`~/Library/LaunchAgents/*.plist` with
 `StartCalendarInterval`, `WorkingDirectory` set to the repository and the
 virtual environment's `python`): unlike cron, launchd runs a missed
-calendar job after the machine wakes. A daily run after the US close for
-`1d`, weekly for `1wk` and monthly for `1mo` is enough; more often is safe
-but only repeats duplicates and provider requests. Do not let two invocations
-run against one ledger at the same time — the store is single-writer and
-takes no lock; give each scheduled command time to finish before the next.
+calendar job after the machine wakes. Do not let two invocations run
+against one ledger at the same time — the store is single-writer and takes
+no lock; give each scheduled command time to finish before the next.
+
+**When a daily run happens matters.** A daily bar from the development
+provider is stamped 00:00 America/New_York and, by the settled-bars rule
+(`timestamp + 1 day <= now`), becomes eligible only at the following
+midnight ET. A run in the evening "after the US close" therefore still
+sees the *previous* day's bar as its tail, and registers that claim after
+the next session has already opened and traded — the claim's own
+reference open and its one-bar outcome already exist. For a claim that is
+genuinely prospective, the run must happen after midnight ET and before
+the next session opens. This generic command does not enforce that; the
+research-controlled **Prospective Collection v1** does (`00:30 <= ET <
+09:00`, refused otherwise before any provider call), uses its own ledger
+root, and is the path for collecting evidence meant for later validation —
+see [docs/prospective_collection.md](prospective_collection.md). Weekly
+and monthly refreshes follow the same rule at their own cadence. More
+frequent runs repeat duplicates and provider requests only while the
+provider returns the same bar content; a bar revised between runs is a
+`CONFLICT` (the refresh fails loudly and the held claim is never rewritten)
+and later evaluations of that claim are `SOURCE_BAR_REVISED`.
 
 **What local scheduling does not give you.** This machine is the only
 durable host. If it is asleep, launchd may run the job after wake; if it is
@@ -405,7 +422,12 @@ A metric group reports exactly `sample_count`, `positive_count`,
    a missed run is a missing prospective claim (see
    [Headless collection](#headless-collection-12g)).
 
-Not part of Phase 12 and not started: scheduler code or installation, a
-benchmarked retrospective study (Phase R), error analysis (Phase 13),
-outcome-aware AI explanation (11B), any dashboard rendering of summaries,
-and any monitoring or repair tooling.
+Not part of Phase 12: scheduler code or installation, a benchmarked
+retrospective study (Phase R), error analysis (Phase 13), outcome-aware AI
+explanation (11B), any dashboard rendering of summaries, and any repair
+tooling. The research-controlled prospective collection that wraps this
+ledger — its own root, activation manifest, collection window, run log and
+Level-1 health report — is documented separately in
+[docs/prospective_collection.md](prospective_collection.md) and
+[ADR 0013](adr/0013-prospective-collection-and-holdout.md); it changes
+nothing described on this page.

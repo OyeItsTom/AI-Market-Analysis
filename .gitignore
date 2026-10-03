@@ -39,6 +39,11 @@ data/feeds/
 # and what the market did afterwards. Local research state, never committed.
 data/outcomes/
 
+# The prospective collection root (activation manifest, run log, lock and its
+# own outcome ledger). Live research state: what this machine claimed, when,
+# and what followed. Never committed. See docs/prospective_collection.md.
+data/prospective/
+
 # Generated Phase R study runs (manifest, summaries, the raw observations
 # export). Reproducible from a committed methodology; the small tracked
 # copies live under docs/research/, never here.
