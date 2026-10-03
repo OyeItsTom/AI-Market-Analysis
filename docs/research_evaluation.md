@@ -171,11 +171,18 @@ The denominator is only the **evaluated outcomes in that directional state**.
 For BULLISH the hit rate and the positive-return rate are the same quantity by
 definition; for BEARISH they are not complements whenever zero returns occur.
 
+The hit rate compares the state name's colloquial directional connotation with
+the later observed return sign. The state itself is defined from
+observation-time evidence only (see
+[research_framework.md §2](research_framework.md#2-researchstate-semantics)),
+so a miss is an outcome description, **not** a hypothesis misclassification.
+
 ## 11. Neutral treatment
 
 `NEUTRAL` gets count, mean, median and positive-return rate — and **no hit
-rate**. There is no direction to be right or wrong about, and scoring it either
-way would be inventing a contract. `INSUFFICIENT_DATA` observations are
+rate**. NEUTRAL names no direction, so there is no colloquial sign to compare
+the later return against, and scoring it either way would be inventing a
+contract. `INSUFFICIENT_DATA` observations are
 ineligible and reported separately.
 
 ## 12. Overlapping horizons

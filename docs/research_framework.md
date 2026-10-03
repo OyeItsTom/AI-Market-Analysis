@@ -34,6 +34,16 @@ BULLISH  BEARISH  NEUTRAL  INSUFFICIENT_DATA
 evidence as bullish-leaning"*. It does **not** mean "buy", "this will rise", or
 "this is a profitable signal".
 
+`BULLISH` and `BEARISH` are **structural classifications** produced by the
+hypothesis from information available at the observation timestamp. They are
+not, by themselves, forecasts, trading recommendations, or guarantees of
+subsequent return direction. Either state can be followed by a return of
+either sign, and that alone does not establish an implementation error. For
+what actually followed these classifications on a fixed universe and decade,
+see the frozen retrospective results in
+[docs/research/baseline_study_v1/](research/baseline_study_v1/) and
+[docs/research/error_analysis_v1/](research/error_analysis_v1/).
+
 `INSUFFICIENT_DATA` is reserved for **legitimately unavailable evidence** —
 an indicator still in warm-up. It is never used to absorb a structural problem.
 A symbol mismatch, interval mismatch, wrong price basis or missing required

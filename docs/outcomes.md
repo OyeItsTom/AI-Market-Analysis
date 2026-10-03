@@ -64,7 +64,10 @@ Both are frozen copies of the Phase 3 / Phase 6 record, taken verbatim:
 
 - **`ObservationArtifact`** — one hypothesis's `ResearchObservation`.
   Producer: `hypothesis_id`, `hypothesis_version`, `hypothesis_fingerprint`.
-  State vocabulary: `ResearchState`.
+  State vocabulary: `ResearchState` — structural classifications (see
+  [research_framework.md §2](research_framework.md#2-researchstate-semantics));
+  a forward return recorded beside a state does not grade whether the state
+  was correct.
 - **`AssessmentArtifact`** — one policy's `ResearchAssessment`. Producer:
   `policy_fingerprint`. State vocabulary: `AssessmentState` (so `CONFLICTED`
   survives as itself).

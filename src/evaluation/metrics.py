@@ -41,10 +41,13 @@ class StateMetrics:
 
     ``positive_return_rate`` -- fraction with ``outcome_value > 0``.
 
-    ``directional_hit_rate`` -- fraction classified in the correct direction:
+    ``directional_hit_rate`` -- fraction of directional states whose later
+    forward return has the sign colloquially suggested by the state name:
     ``> 0`` for BULLISH, ``< 0`` for BEARISH. **Exactly zero counts as a miss
-    for both.** ``None`` for non-directional groups, where the concept does
-    not apply -- NEUTRAL is never scored as right or wrong.
+    for both.** This is an outcome-description metric; a miss does not by
+    itself mean that the structural classification was incorrect. ``None``
+    for non-directional groups: the metric only compares the two directional
+    state names with later return signs, and NEUTRAL names no direction.
 
     Note that for BULLISH the hit rate and the positive-return rate are the
     same quantity by definition; for BEARISH they are not complements whenever

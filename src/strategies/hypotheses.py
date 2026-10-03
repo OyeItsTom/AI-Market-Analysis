@@ -49,6 +49,9 @@ class TrendAlignment(ResearchHypothesis):
     The dead-band exists so that two averages sitting on top of each other are
     reported as what they are -- no separation -- rather than flipping between
     directional states on floating-point noise.
+
+    ``BULLISH`` / ``BEARISH`` name the SMA20/SMA50 configuration at the
+    observation timestamp. They do not forecast the sign of the later return.
     """
 
     hypothesis_id = "trend_alignment"
@@ -109,6 +112,10 @@ class MomentumInTrendContext(ResearchHypothesis):
 
     Note ``NEUTRAL`` here can mean "conflicting" or "unremarkable"; the reason
     codes distinguish them, which is exactly why reason codes exist.
+
+    ``BULLISH`` / ``BEARISH`` describe the SMA20/SMA50 configuration together
+    with the RSI14 condition at the observation timestamp. They are not a
+    guarantee of subsequent return direction.
     """
 
     hypothesis_id = "momentum_in_trend_context"
