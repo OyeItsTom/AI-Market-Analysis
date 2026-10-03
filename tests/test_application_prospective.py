@@ -9,6 +9,7 @@ live ``data/prospective/v1``.
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 from dataclasses import replace
@@ -57,7 +58,12 @@ def activated(tmp_path, *, at=ACTIVATED_AT, definition=COLLECTION_V1):
     return store
 
 
-def run(store, moment, provider=None, *, definition=COLLECTION_V1, clock=None):
+#: Run ids are unique across a test session, as uuid4 ids are in production.
+_RUN_IDS = itertools.count()
+
+
+def run(store, moment, provider=None, *, definition=COLLECTION_V1, clock=None,
+        repository=None, **kwargs):
     provider = provider if provider is not None else SessionProvider()
     clock = clock if clock is not None else Clock(moment)
     built = []
@@ -66,9 +72,10 @@ def run(store, moment, provider=None, *, definition=COLLECTION_V1, clock=None):
         built.append(provider)
         return provider
 
-    ids = iter(f"run-{n}" for n in range(1000))
     report = collect(store, provider_factory=factory, now=clock,
-                     run_id_factory=lambda: next(ids), definition=definition)
+                     run_id_factory=lambda: f"run-{next(_RUN_IDS)}", definition=definition,
+                     repository=repository if repository is not None else ProbeDouble(),
+                     **kwargs)
     return report, built
 
 
@@ -93,9 +100,10 @@ def files(root):
 
 
 class TestActivation:
-    def test_writes_only_the_manifest(self, tmp_path):
+    def test_writes_only_the_lock_and_the_manifest(self, tmp_path):
         store = activated(tmp_path)
-        assert sorted(files(store.root)) == ["activation.json"]
+        assert sorted(files(store.root)) == ["activation.json", "collect.lock"]
+        assert store.lock_path.read_bytes() == b""
         manifest = store.read_manifest()
         assert manifest.activated_at == ACTIVATED_AT
         assert manifest.collection_fingerprint == COLLECTION_V1.fingerprint
@@ -157,7 +165,7 @@ class TestRefusedRuns:
         store.manifest_path.write_bytes(b"{}\n")
         report, built = run(store, TUESDAY_RUN)
         assert (report.outcome, report.record, built) == ("invalid_manifest", None, [])
-        assert sorted(files(store.root)) == ["activation.json"]
+        assert sorted(files(store.root)) == ["activation.json", "collect.lock"]
 
     @pytest.mark.parametrize("moment", [
         et(2026, 10, 6, 0, 29, 59), et(2026, 10, 6, 9, 0, 0), et(2026, 10, 6, 16, 30),
@@ -191,7 +199,7 @@ class TestRefusedRuns:
     def test_a_held_lock_refuses_without_provider_or_record(self, tmp_path):
         store = activated(tmp_path)
         with store.exclusive_lock():
-            report, built = run(store, TUESDAY_RUN)
+            report, built = run(store, TUESDAY_RUN, lock_timeout=0)
         assert (report.outcome, report.record, built) == ("locked", None, [])
         assert list(store.iter_runs()) == []
         assert not store.ledger_exists()
@@ -271,29 +279,56 @@ class TestCollection:
         assert statuses(report) == [CollectionStatus.DUPLICATE_ALREADY_EXISTS] * 5
 
     @staticmethod
-    def _truncate_to_two_claims(store):
-        """A crash after two of the tail's four registrations."""
-        for symbol in COLLECTION_V1.universe:
-            path = store.ledger_root / symbol / "1d" / "raw" / "artifacts.jsonl"
-            path.write_bytes(b"".join(path.read_bytes().splitlines(keepends=True)[:2]))
+    def _crash_after_two_spy_claims(store, monkeypatch):
+        """A real crash: the process dies after two of SPY's four registrations.
 
-    def test_a_partial_tail_is_never_completed_late(self, tmp_path):
+        The run start is durable, the completed run record never is, and the
+        two orphan claims are exactly what the collector wrote.
+        """
+        real = prospective.build_outcome_ledger
+
+        class Crash(BaseException):
+            pass
+
+        def crashing(root):
+            ledger = real(root)
+            original = ledger.register_artifact
+            written = []
+
+            def register(artifact):
+                if len(written) == 2:
+                    raise Crash()
+                written.append(artifact)
+                return original(artifact)
+
+            ledger.register_artifact = register
+            return ledger
+
+        monkeypatch.setattr(prospective, "build_outcome_ledger", crashing)
+        with pytest.raises(Crash):
+            run(store, TUESDAY_RUN)
+        monkeypatch.setattr(prospective, "build_outcome_ledger", real)
+        assert len(list(ledger(store).iter_artifacts(partition("SPY")))) == 2
+
+    def test_a_partial_tail_is_never_completed_late(self, tmp_path, monkeypatch):
         store = activated(tmp_path)
-        run(store, TUESDAY_RUN)
-        self._truncate_to_two_claims(store)
+        self._crash_after_two_spy_claims(store, monkeypatch)
         before = files(store.ledger_root)
         report, _ = run(store, et(2026, 10, 7, 7), SessionProvider(lag_until=date(2026, 10, 5)))
+        assert report.provenance.status == "degraded"
         assert statuses(report) == [CollectionStatus.STALE_TAIL] * 5
         assert files(store.ledger_root) == before
 
-    def test_a_partial_tail_is_completed_while_still_current(self, tmp_path):
+    def test_a_partial_tail_is_completed_while_still_current(self, tmp_path, monkeypatch):
         store = activated(tmp_path)
-        run(store, TUESDAY_RUN)
-        self._truncate_to_two_claims(store)
+        self._crash_after_two_spy_claims(store, monkeypatch)
         report, _ = run(store, et(2026, 10, 6, 8))
+        assert report.provenance.status == "degraded"
         assert statuses(report) == [CollectionStatus.OK] * 5
-        assert all((e.artifacts_new, e.artifacts_duplicate) == (2, 2)
-                   for e in report.record.symbols)
+        assert (report.record.symbols[0].artifacts_new,
+                report.record.symbols[0].artifacts_duplicate) == (2, 2)
+        assert all((e.artifacts_new, e.artifacts_duplicate) == (4, 0)
+                   for e in report.record.symbols[1:])
 
     def test_holiday_after_an_unclaimed_friday_is_refused_conservatively(self, tmp_path):
         store = activated(tmp_path, at=et(2026, 10, 9, 1))  # before Friday settles
@@ -353,16 +388,18 @@ class TestCollection:
         assert all(entry.stage == "window" for entry in report.record.symbols[2:])
         assert not (store.ledger_root / "IWM").exists()
 
-    def test_a_corrupt_partition_is_reported_and_left_untouched(self, tmp_path):
+    def test_a_corrupt_partition_refuses_the_whole_run_and_is_left_untouched(self, tmp_path):
+        """Provenance cannot be established over an unreadable partition, so the
+        run is refused before any provider exists (N2), not collected around it."""
         store = activated(tmp_path)
         run(store, TUESDAY_RUN)
         path = store.ledger_root / "SPY" / "1d" / "raw" / "artifacts.jsonl"
         path.write_bytes(path.read_bytes() + b'{"torn"')
         corrupt = path.read_bytes()
-        report, _ = run(store, et(2026, 10, 7, 7))
-        assert report.record.symbols[0].status is CollectionStatus.CORRUPT_LEDGER
-        assert report.record.symbols[0].error_class == "LedgerCorruption"
-        assert statuses(report)[1:] == [CollectionStatus.OK] * 4
+        report, built = run(store, et(2026, 10, 7, 7))
+        assert report.outcome == "provenance_unknown" and built == []
+        assert report.record.symbols == ()
+        assert report.provenance.reasons == (("integrity_corrupt", 1),)
         assert path.read_bytes() == corrupt
 
     def test_a_refresh_failure_is_classified(self, tmp_path, monkeypatch):
@@ -470,8 +507,10 @@ class TestHealth:
         run(store, TUESDAY_RUN)
         store.run_log_path.write_bytes(store.run_log_path.read_bytes() + b"{")
         report = health(store)
+        # line 1 is the run start, line 2 the completed record, line 3 the torn tail
         assert (report.status, report.corrupt_component, report.corrupt_line) == (
-            "corrupt", "run_log", 2)
+            "corrupt", "run_log", 3)
+        assert report.provenance.status == "unknown"
 
     def test_config_mismatch(self, tmp_path):
         store = activated(tmp_path)

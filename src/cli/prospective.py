@@ -20,8 +20,16 @@ value; only class names are printed).
 
 Exit codes: ``0`` done; ``1`` a collection completed with at least one
 symbol not collected, or health found a problem; ``2`` usage error or a
-refusal (not activated, locked, outside the window, configuration
-mismatch, activation refused).
+refusal (not activated, locked, lock missing, corrupt run log, outside the
+window, configuration mismatch, collector identity, provenance invalid or
+unknown, activation refused).
+
+``health`` exits ``0`` when the root is not activated, or active with
+``provenance=ok``; ``2`` when a collection holds the root
+(``collect_in_progress``: nothing was inspected -- run it again
+afterwards); ``1`` for everything else that needs attention
+(``provenance=degraded`` or ``invalid``, corruption, configuration
+mismatch, invalid manifest, missing lock).
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from typing import Callable, Mapping, Sequence, TextIO
 from src.application.prospective import (
     ActivationRefused,
     CollectionReport,
+    ProvenanceReport,
     HealthReport,
     activate,
     build_prospective_store,
@@ -77,6 +86,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _time(value: datetime | None) -> str:
     return "none" if value is None else value.isoformat()
+
+
+def provenance_fields(report: ProvenanceReport) -> dict[str, object]:
+    """Level-1 provenance fields: status, reason counts and the first position."""
+    fields: dict[str, object] = {
+        "provenance": report.status,
+        "provenance_reasons": ",".join(f"{reason}:{count}" for reason, count
+                                       in report.reasons) or "none",
+    }
+    first = report.first_finding
+    if first is not None:
+        fields["provenance_component"] = first.component
+        if first.symbol is not None:
+            fields["provenance_symbol"] = first.symbol
+        if first.line is not None:
+            fields["provenance_line"] = first.line
+    return fields
 
 
 # -- activate --------------------------------------------------------------------------------
@@ -131,8 +157,10 @@ def format_symbol_run(entry) -> str:
     return format_line(fields)
 
 
-def _run_collect(store, *, provider_factory, now, run_id_factory, stdout) -> int:
+def _run_collect(store, *, provider_factory, now, run_id_factory, repository, stdout) -> int:
     kwargs: dict[str, object] = {}
+    if repository is not None:
+        kwargs["repository"] = repository
     if provider_factory is not None:
         kwargs["provider_factory"] = provider_factory
     if now is not None:
@@ -146,7 +174,7 @@ def _run_collect(store, *, provider_factory, now, run_id_factory, stdout) -> int
         return EXIT_REFUSED
     for entry in record.symbols:
         print(format_symbol_run(entry), file=stdout)
-    print(format_line({
+    summary: dict[str, object] = {
         "run_status": record.run_status.value,
         "run_id": record.run_id,
         "started_at": _time(record.started_at),
@@ -155,7 +183,10 @@ def _run_collect(store, *, provider_factory, now, run_id_factory, stdout) -> int
         "ok": record.symbols_ok,
         "pre_activation": record.symbols_pre_activation,
         "failed": record.symbols_failed,
-    }), file=stdout)
+    }
+    if report.provenance is not None:
+        summary.update(provenance_fields(report.provenance))
+    print(format_line(summary), file=stdout)
     if report.outcome != "completed":
         return EXIT_REFUSED
     return EXIT_OK if record.symbols_failed == 0 else EXIT_FAILED
@@ -207,11 +238,19 @@ def format_health(report: HealthReport) -> list[str]:
             "runs_completed": report.runs_completed,
             "runs_outside_window": report.runs_outside_window,
             "runs_config_mismatch": report.runs_config_mismatch,
+            "runs_refused_collector": report.runs_refused_collector,
+            "runs_refused_provenance": report.runs_refused_provenance,
+            "runs_interrupted": report.runs_interrupted,
             "last_run": _time(report.last_run),
             "last_success": _time(report.last_success),
             "symbol_statuses": ",".join(f"{name}:{count}" for name, count
                                         in report.status_counts) or "none",
         }))
+    provenance = provenance_fields(report.provenance)
+    provenance["provenance_policy_fingerprint"] = report.provenance_policy_fingerprint
+    provenance["claims_checked"] = report.provenance.claims_checked
+    provenance["outcomes_checked"] = report.provenance.outcomes_checked
+    lines.append(format_line(provenance))
     integrity: dict[str, object] = {"integrity": report.integrity}
     if report.corrupt_component is not None:
         integrity["corrupt_component"] = report.corrupt_component
@@ -221,11 +260,21 @@ def format_health(report: HealthReport) -> list[str]:
     return lines
 
 
+def health_exit_code(report: HealthReport) -> int:
+    if report.status == "collect_in_progress":
+        return EXIT_REFUSED
+    if report.status == "not_activated":
+        return EXIT_OK
+    if report.status == "active" and report.provenance.status == "ok":
+        return EXIT_OK
+    return EXIT_FAILED
+
+
 def _run_health(store, *, stdout) -> int:
     report = health(store)
     for line in format_health(report):
         print(line, file=stdout)
-    return EXIT_OK if report.status in ("active", "not_activated") else EXIT_FAILED
+    return health_exit_code(report)
 
 
 # -- entry point -----------------------------------------------------------------------------
@@ -258,12 +307,13 @@ def main(
                              stdout=stdout, stderr=stderr)
     if args.command == "collect":
         return _run_collect(store, provider_factory=provider_factory, now=now,
-                            run_id_factory=run_id_factory, stdout=stdout)
+                            run_id_factory=run_id_factory, repository=repository,
+                            stdout=stdout)
     return _run_health(store, stdout=stdout)
 
 
-__all__ = ["main", "build_parser", "format_symbol_run", "format_health",
-           "EXIT_OK", "EXIT_FAILED", "EXIT_REFUSED"]
+__all__ = ["main", "build_parser", "format_symbol_run", "format_health", "provenance_fields",
+           "health_exit_code", "EXIT_OK", "EXIT_FAILED", "EXIT_REFUSED"]
 
 
 if __name__ == "__main__":

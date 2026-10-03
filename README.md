@@ -39,8 +39,11 @@ Phase 13B change justified; documentation hardening is the only nominated
 follow-up.**
 **M1 — Prospective Collection v1 (`python -m src.cli.prospective`): infrastructure
 implemented, NOT ACTIVATED.** No claim has been collected and no scheduler is
-installed. Activation remains blocked on a frozen M2 future-validation
-pre-registration, explicit human approval and local scheduler setup. See
+installed. Provenance hardening (N2) is implemented: a write into the
+prospective ledger by any other tool is detected and stops collection.
+Activation remains blocked on a frozen M2 future-validation
+pre-registration, explicit human approval, a pinned collector clone and
+local scheduler setup. See
 [docs/prospective_collection.md](docs/prospective_collection.md) and
 [ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md).
 

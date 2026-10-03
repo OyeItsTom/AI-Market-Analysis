@@ -24,6 +24,7 @@ from .definition import DefinitionError, require_aware, validate_commit_sha
 
 MANIFEST_SCHEMA = "prospective_activation_v1"
 RUN_SCHEMA = "prospective_run_v1"
+RUN_START_SCHEMA = "prospective_run_start_v1"
 
 
 class RecordError(ValueError):
@@ -84,11 +85,26 @@ SUCCESS_STATUSES = frozenset({
 
 
 class RunStatus(str, Enum):
-    """How a recorded run ended as a whole."""
+    """How a recorded run ended as a whole.
+
+    Only ``COMPLETED`` follows a run-start record and carries symbols. Every
+    other value is a refusal recorded before any provider existed; such a
+    record has no symbols and wrote nothing to the ledger.
+    """
 
     COMPLETED = "completed"
     OUTSIDE_COLLECTION_WINDOW = "outside_collection_window"
     CONFIG_MISMATCH = "config_mismatch"
+    #: The repository HEAD is not the collector commit the manifest records.
+    COLLECTOR_COMMIT_MISMATCH = "collector_commit_mismatch"
+    #: The collector's working tree has uncommitted or untracked changes.
+    DIRTY_COLLECTOR_TREE = "dirty_collector_tree"
+    #: The repository could not be inspected, so the collector is unverified.
+    COLLECTOR_UNVERIFIED = "collector_unverified"
+    #: The existing ledger failed provenance reconciliation.
+    PROVENANCE_INVALID = "provenance_invalid"
+    #: The existing ledger could not be read strictly, so provenance is unknown.
+    PROVENANCE_UNKNOWN = "provenance_unknown"
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.value
@@ -456,9 +472,89 @@ class RunRecord:
         return record
 
 
+@dataclass(frozen=True)
+class RunStart:
+    """The durable intent of one collection run, written before any provider exists.
+
+    Appended (and fsynced) under the exclusive lock after every identity,
+    configuration, integrity and provenance check has passed. The completed
+    :class:`RunRecord` reuses its ``run_id``. A start with no completed record
+    is an interrupted run: evidence that ledger writes stamped inside its
+    interval may come from the supported collector, never a licence for them
+    (see :mod:`src.prospective.provenance`). It carries identities and a
+    clock only -- nothing a run could have learnt.
+    """
+
+    run_id: str
+    started_at: datetime
+    collection_fingerprint: str
+    provenance_policy_fingerprint: str
+    activated_at: datetime
+    collector_git_commit: str
+    universe: tuple[str, ...]
+
+    FIELDS = frozenset({
+        "schema", "run_id", "started_at", "collection_fingerprint",
+        "provenance_policy_fingerprint", "activated_at", "collector_git_commit", "universe",
+    })
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "universe", tuple(self.universe))
+        for value in (self.started_at, self.activated_at):
+            require_aware(value, "timestamp")
+        _str(self.run_id, "run_id")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema": RUN_START_SCHEMA,
+            "run_id": self.run_id,
+            "started_at": encode_time(self.started_at),
+            "collection_fingerprint": self.collection_fingerprint,
+            "provenance_policy_fingerprint": self.provenance_policy_fingerprint,
+            "activated_at": encode_time(self.activated_at),
+            "collector_git_commit": self.collector_git_commit,
+            "universe": list(self.universe),
+        }
+
+    def to_line(self) -> bytes:
+        return (canonical_json(self.to_payload()) + "\n").encode("ascii")
+
+    @classmethod
+    def from_payload(cls, payload: object, raw: bytes) -> "RunStart":
+        payload = _require_keys(payload, cls.FIELDS, "run start")
+        if payload["schema"] != RUN_START_SCHEMA:
+            raise RecordError(f"unknown run start schema {payload['schema']!r}")
+        record = cls(
+            run_id=_str(payload["run_id"], "run_id"),
+            started_at=decode_time(payload["started_at"], "started_at"),
+            collection_fingerprint=_str(payload["collection_fingerprint"],
+                                        "collection_fingerprint"),
+            provenance_policy_fingerprint=_str(payload["provenance_policy_fingerprint"],
+                                               "provenance_policy_fingerprint"),
+            activated_at=decode_time(payload["activated_at"], "activated_at"),
+            collector_git_commit=_str(payload["collector_git_commit"], "collector_git_commit"),
+            universe=_str_tuple(payload["universe"], "universe"),
+        )
+        if record.to_line() != raw + b"\n":
+            raise RecordError("run start bytes are not canonical")
+        return record
+
+
+def decode_run_log_line(raw: bytes) -> "RunStart | RunRecord":
+    """One run-log line (without its newline): a :class:`RunStart` or a :class:`RunRecord`."""
+    try:
+        payload = json.loads(raw.decode("ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RecordError("run log line is not ASCII JSON") from exc
+    if isinstance(payload, dict) and payload.get("schema") == RUN_START_SCHEMA:
+        return RunStart.from_payload(payload, raw)
+    return RunRecord.from_line(raw)
+
+
 __all__ = [
     "MANIFEST_SCHEMA",
     "RUN_SCHEMA",
+    "RUN_START_SCHEMA",
     "RecordError",
     "CollectionStatus",
     "SUCCESS_STATUSES",
@@ -466,5 +562,7 @@ __all__ = [
     "ActivationManifest",
     "SymbolRun",
     "RunRecord",
+    "RunStart",
+    "decode_run_log_line",
     "canonical_json",
 ]
