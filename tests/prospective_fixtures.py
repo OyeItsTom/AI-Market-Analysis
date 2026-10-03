@@ -146,7 +146,8 @@ def build_matured_root(base: Path, sessions: int) -> Path:
     provider = SessionProvider()
     for number, moment in enumerate(weekday_mornings(date(2026, 10, 6), sessions)):
         report = collect(store, provider_factory=lambda: provider, now=Clock(moment),
-                         run_id_factory=lambda: f"run-{number}", definition=SPY_ONLY)
+                         run_id_factory=lambda: f"run-{number}", definition=SPY_ONLY,
+                         repository=ProbeDouble())
         assert report.record.symbols_failed == 0
     return store.root
 

@@ -35,8 +35,11 @@ HEALTH_KEYS = {
     "symbol", "readable", "claims_total", "tails_registered", "claims_evaluable",
     "claims_insufficient", "outcomes_matured_h1", "outcomes_matured_h5", "outcomes_matured_h20",
     "pending", "missed_collections", "missed_dates", "last_tail",
-    "runs_total", "runs_completed", "runs_outside_window", "runs_config_mismatch", "last_run",
+    "runs_total", "runs_completed", "runs_outside_window", "runs_config_mismatch",
+    "runs_refused_collector", "runs_refused_provenance", "runs_interrupted", "last_run",
     "last_success", "symbol_statuses",
+    "provenance", "provenance_reasons", "provenance_component", "provenance_symbol",
+    "provenance_line", "provenance_policy_fingerprint", "claims_checked", "outcomes_checked",
     "integrity", "corrupt_component", "corrupt_line",
 }
 
@@ -47,6 +50,8 @@ COLLECT_KEYS = {
     "refused", "out_of_window", "missed_tails",
     "run_status", "run_id", "started_at", "finished_at", "symbols", "ok", "pre_activation",
     "failed", "collect", "reason",
+    "provenance", "provenance_reasons", "provenance_component", "provenance_symbol",
+    "provenance_line",
 }
 
 
@@ -113,7 +118,7 @@ class TestActivate:
         assert fields["activation"] == "written"
         assert fields["activated_at"] == "2026-10-05T15:00:00-04:00"
         assert fields["m2_preregistration_git_commit"] == M2_SHA
-        assert sorted(p.name for p in root.iterdir()) == ["activation.json"]
+        assert sorted(p.name for p in root.iterdir()) == ["activation.json", "collect.lock"]
         code, lines, _ = cli(ACTIVATE, root, now=et(2026, 10, 6, 15))
         assert code == EXIT_REFUSED
         assert parse(lines[0]) == {"activation": "refused", "reason": "already_activated"}
@@ -203,7 +208,8 @@ class TestHealth:
         code, lines, _ = cli(["health"], active)
         assert code == EXIT_FAILED
         assert parse(lines[-1]) == {"integrity": "corrupt", "corrupt_component": "run_log",
-                                    "corrupt_line": "2"}
+                                    "corrupt_line": "3"}
+        assert parse(lines[-2])["provenance"] == "unknown"
 
     def test_matured_health_output_leaks_no_value(self, matured_template, tmp_path):
         from src.application.prospective import build_outcome_ledger

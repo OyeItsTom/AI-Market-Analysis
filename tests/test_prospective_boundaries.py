@@ -77,7 +77,8 @@ def called(node: ast.AST) -> list[str]:
 
 def test_the_package_has_exactly_its_modules():
     assert [p.name for p in PACKAGE_FILES] == [
-        "__init__.py", "definition.py", "environment.py", "records.py", "store.py"]
+        "__init__.py", "definition.py", "environment.py", "provenance.py", "records.py",
+        "store.py"]
 
 
 @pytest.mark.parametrize("path", PACKAGE_FILES, ids=lambda p: p.name)
@@ -89,7 +90,7 @@ def test_the_package_reaches_no_other_project_layer_but_market_data_types(path):
 IO_MODULES = {"os", "fcntl", "pathlib", "subprocess", "socket", "shutil", "tempfile",
               "urllib", "requests", "http", "time", "random", "importlib", "platform"}
 ALLOWED_IO = {
-    "store.py": {"os", "fcntl", "pathlib"},
+    "store.py": {"os", "fcntl", "pathlib", "time"},
     "environment.py": {"subprocess", "pathlib", "importlib", "platform"},
 }
 
@@ -175,7 +176,7 @@ def test_the_collection_window_is_checked_before_any_provider_exists():
     """``collect`` decides the window before it can construct a provider, and each
     symbol re-checks it before it asks the lazy provider for one."""
     source = APPLICATION.read_text()
-    collect_body = ast.get_source_segment(source, _function(APPLICATION, "collect"))
+    collect_body = ast.get_source_segment(source, _function(APPLICATION, "_collect_locked"))
     assert collect_body.index("in_collection_window(started_at)") < collect_body.index(
         "_LazyProvider(")
     symbol_body = ast.get_source_segment(source, _function(APPLICATION, "_collect_symbol"))
@@ -184,7 +185,8 @@ def test_the_collection_window_is_checked_before_any_provider_exists():
 
 #: Every function on the collect and health paths, whose output is Level 1.
 LEVEL_ONE_PATHS = (
-    (APPLICATION, "collect"), (APPLICATION, "_collect_symbol"),
+    (APPLICATION, "collect"), (APPLICATION, "_collect_locked"),
+    (APPLICATION, "_collect_symbol"),
     (APPLICATION, "_collect_symbol_guarded"), (APPLICATION, "health"),
     (CLI, "_run_collect"), (CLI, "format_symbol_run"), (CLI, "_run_health"),
     (CLI, "format_health"),

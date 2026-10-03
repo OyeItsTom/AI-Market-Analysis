@@ -164,6 +164,15 @@ class CollectionDefinition:
     def hypothesis_fingerprints(self) -> dict[str, str]:
         return {pin.hypothesis_id: pin.fingerprint for pin in self.hypotheses}
 
+    @property
+    def claims_per_tail(self) -> int:
+        """Claims one complete tail registers: one per hypothesis plus the assessment.
+
+        Derived, not declared: it is not part of the canonical form, so the
+        fingerprint is unaffected.
+        """
+        return len(self.hypotheses) + 1
+
 
 COLLECTION_V1 = CollectionDefinition(
     collection_id="prospective_collection_v1",
