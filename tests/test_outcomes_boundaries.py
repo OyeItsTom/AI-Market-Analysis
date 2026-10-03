@@ -97,9 +97,12 @@ SUMMARY = OUTCOMES / "summary.py"
 
 def test_the_stage_boundary_is_12e():
     """12D orchestration and 12E summary are in. Error analysis (Phase 13),
-    outcome-aware reasoning (11B), an application-level summary and any
-    monitoring are later gates, and no module for them may appear before
-    its gate."""
+    outcome-aware reasoning (11B) and an application-level summary are later
+    gates, and no module for them may appear before its gate. Generic
+    outcome monitoring modules under these names stay forbidden; the one
+    operational monitor that exists -- Prospective Collection v1's Level-1
+    ``health`` in ``src/application/prospective.py`` -- arrived through its
+    own gate (ADR 0013) and is pinned in ``tests/test_prospective_boundaries.py``."""
     assert APPLICATION_OUTCOMES.exists()
     assert SUMMARY.exists()
     for later in (
@@ -312,10 +315,14 @@ def test_no_python_hash_is_used_for_identity():
 
 def test_only_the_application_orchestration_consumes_outcomes():
     """Consumers, by name. The 12D application module is the only production
-    code that may register, evaluate or read through the ledger; the Phase R
-    study orchestration reuses only the package's bar fingerprint for its
-    manifest. The dashboard reaches outcomes through the application's API,
-    and nothing else does."""
+    code that may register or evaluate; the Phase R study orchestration
+    reuses only the package's bar fingerprint for its manifest; Prospective
+    Collection v1 orchestration takes a partition key, the corruption error
+    and the evaluation version, *reads* its own ledger (timestamps,
+    eligibility and horizon counts only) and writes only through the 12D
+    module (pinned in ``tests/test_prospective_boundaries.py``). The
+    dashboard reaches outcomes through the application's API, and nothing
+    else does."""
     consumers = [
         path.relative_to(SRC).as_posix()
         for path in sorted(SRC.rglob("*.py"))
@@ -323,7 +330,8 @@ def test_only_the_application_orchestration_consumes_outcomes():
         and "outcomes" not in path.parts
         and imports_package(imported(path), "src.outcomes")
     ]
-    assert consumers == ["application/outcomes.py", "application/study.py"], consumers
+    assert consumers == ["application/outcomes.py", "application/prospective.py",
+                         "application/study.py"], consumers
 
 
 def test_the_study_orchestration_reuses_only_the_bar_fingerprint():
