@@ -33,6 +33,12 @@ from .spec import HypothesisSpec
 class ResearchState(str, Enum):
     """How a hypothesis classifies the evidence at one point in time.
 
+    ``BULLISH`` and ``BEARISH`` are structural classifications produced from
+    information available at the observation timestamp. They are not forecasts,
+    trading recommendations, or guarantees of subsequent return direction.
+    Either state may be followed by returns of either sign without that alone
+    implying that the classification was implemented incorrectly.
+
     ``INSUFFICIENT_DATA`` is reserved for *legitimately* unavailable evidence:
     an indicator still in warm-up. It is never used to absorb a structural
     problem -- a symbol mismatch, an interval mismatch, a wrong price basis or
