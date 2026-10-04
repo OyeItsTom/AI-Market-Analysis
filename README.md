@@ -46,6 +46,14 @@ pre-registration, explicit human approval, a pinned collector clone and
 local scheduler setup. See
 [docs/prospective_collection.md](docs/prospective_collection.md) and
 [ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md).
+**M2A — FUTURE_VALIDATION_V1 (`python -m src.cli.future_validation status|run`):
+pre-registration and runner implemented, NOT bound to activation (M2B) and
+never run on real data.** Per-symbol (SPY, QQQ, IWM) `trend_alignment` BULLISH
+h20 vs the Phase R matched-unconditional benchmark; blind 48-month/750-claim
+stop rule (72-month forced unlock), measured on the collected-evidence clock,
+never the host clock; write-once, verified unlock and result. See
+[docs/research/future_validation_v1.md](docs/research/future_validation_v1.md)
+and [ADR 0014](docs/adr/0014-future-validation-v1.md).
 
 Paper-trade execution is not implemented. Telegram is deferred — see
 [ADR 0007](docs/adr/0007-external-feeds.md).
@@ -244,6 +252,10 @@ src/prospective/         M1 Prospective Collection v1 (implemented, NOT activate
 ├── store.py             data/prospective/v1: write-once manifest, run log, root lock
 └── environment.py       read-only git probe + dependency versions for activation
 
+src/research/future_validation.py         M2 FUTURE_VALIDATION_V1 definition (pre-registration)
+src/research/future_validation_engine.py  pure stop rule, Phase R benchmark reuse, categories
+src/future_validation/store.py            frozen input snapshots + write-once unlock/result
+
 src/features/            pure feature functions over BarSeries
 ├── base.py              FeatureSeries, warm-up and timing semantics
 ├── returns.py           simple and log returns
@@ -268,6 +280,7 @@ Documentation: **[docs/market_data.md](docs/market_data.md)** (Phase 1),
 **[docs/research_baseline_study.md](docs/research_baseline_study.md)** (Phase R),
 **[docs/research_error_analysis.md](docs/research_error_analysis.md)** (Phase 13A),
 **[docs/prospective_collection.md](docs/prospective_collection.md)** (M1, not activated),
+**[docs/research/future_validation_v1.md](docs/research/future_validation_v1.md)** (M2 pre-registration),
 **[ADR 0001](docs/adr/0001-price-basis-and-corporate-actions.md)** (price basis
 and corporate actions), **[ADR 0002](docs/adr/0002-outcome-evaluation-conventions.md)**
 (outcome evaluation conventions),
@@ -284,7 +297,8 @@ explanation), **[ADR 0010](docs/adr/0010-prospective-outcome-tracking.md)**
 benchmarked retrospective study), **[ADR 0012](docs/adr/0012-hypothesis-error-analysis.md)**
 (hypothesis error analysis over the frozen baseline),
 **[ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md)** (prospective
-collection and the reserved holdout).
+collection and the reserved holdout), **[ADR 0014](docs/adr/0014-future-validation-v1.md)**
+(future validation v1 pre-registration).
 
 ### The core idea
 
@@ -408,8 +422,10 @@ next, in order:
    hypotheses) into its own ledger root, collected only between 00:30 and
    09:00 America/New_York, never backfilled, with a blind Level-1 health
    report. Data from 2025-03-01 to activation stays reserved
-3. **M2 — future-validation pre-registration** — must be frozen and
-   remote-durable before M1 is activated
+3. **M2 — future-validation pre-registration** — M2A (definition, document,
+   pure engine, blind status and write-once runner) implemented; M2B (binding
+   the merged M2 commit and fingerprint into activation) and the
+   pre-activation dependency-drift decision remain before M1 is activated
 4. **11B** — outcome-aware grounded reasoning (explanation only; no LLM
    authority over outcomes)
 
