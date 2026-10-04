@@ -1217,10 +1217,13 @@ RESEARCH_ARTIFACT_STORE = SRC / "research" / "artifacts.py"
 
 def test_the_research_package_exists_with_its_modules_and_the_store():
     """Phase R (definition, study, render) and Phase 13A (error_analysis and its
-    renderer) share one store; nothing else lives in the package."""
+    renderer) share one store; M2 adds the FUTURE_VALIDATION_V1 definition and
+    its pure engine (its write-once store is ``src/future_validation``);
+    nothing else lives in the package."""
     assert sorted(p.name for p in RESEARCH_FILES) == [
         "__init__.py", "artifacts.py", "definition.py", "error_analysis.py",
-        "error_analysis_render.py", "render.py", "study.py",
+        "error_analysis_render.py", "future_validation.py", "future_validation_engine.py",
+        "render.py", "study.py",
     ]
     assert (SRC / "cli" / "baseline_study.py") in CLI_FILES
     assert (SRC / "cli" / "error_analysis.py") in CLI_FILES

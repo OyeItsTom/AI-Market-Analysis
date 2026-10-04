@@ -321,7 +321,9 @@ def test_only_the_application_orchestration_consumes_outcomes():
     and the evaluation version, *reads* its own ledger (timestamps,
     eligibility and horizon counts only) and writes only through the 12D
     module (pinned in ``tests/test_prospective_boundaries.py``). The
-    dashboard reaches outcomes through the application's API, and nothing
+    FUTURE_VALIDATION_V1 runner *reads* that ledger only (a partition key and
+    the corruption error; pinned in ``tests/test_future_validation_boundaries.py``).
+    The dashboard reaches outcomes through the application's API, and nothing
     else does."""
     consumers = [
         path.relative_to(SRC).as_posix()
@@ -330,8 +332,8 @@ def test_only_the_application_orchestration_consumes_outcomes():
         and "outcomes" not in path.parts
         and imports_package(imported(path), "src.outcomes")
     ]
-    assert consumers == ["application/outcomes.py", "application/prospective.py",
-                         "application/study.py"], consumers
+    assert consumers == ["application/future_validation.py", "application/outcomes.py",
+                         "application/prospective.py", "application/study.py"], consumers
 
 
 def test_the_study_orchestration_reuses_only_the_bar_fingerprint():
