@@ -6,9 +6,12 @@ operational visibility. Decision record:
 **[ADR 0013](adr/0013-prospective-collection-and-holdout.md)**.
 
 > **Status: implemented, not activated.** No activation manifest exists, no
-> claim has been collected and no scheduler is installed. Activation is
-> blocked until (1) the M2 future-validation pre-registration is frozen and
-> remote-durable, (2) a human explicitly approves activation, (3) a
+> claim has been collected and no scheduler is installed. The M2
+> future-validation pre-registration is frozen and merged (commit
+> `3dac81078b31c4c5856419faae4f2749cc43ede5`, hard-pinned by M2B — see
+> Activation identity binding). Activation is
+> blocked until (1) the remaining pre-activation hardening is done, (2) a
+> human explicitly approves activation, (3) a
 > dedicated collector clone is checked out at the collector commit (see
 > Scheduler setup), and (4) the local scheduler is set up. The N2
 > provenance hardening is implemented: a write into this ledger by any
@@ -24,9 +27,10 @@ computes no performance figure.
 ```
 src/prospective/definition.py   COLLECTION_V1 + fingerprint; ET window, timestamp,
                                 activation, current-tail and missed-tail rules (pure)
-src/prospective/records.py      ActivationManifest, RunRecord, SymbolRun, statuses (Level 1)
+src/prospective/records.py      ActivationManifest (v2), RunRecord, SymbolRun, statuses (Level 1)
 src/prospective/store.py        collect.lock + activation.json (write-once), runs.jsonl, locks
-src/prospective/environment.py  git HEAD / clean / ancestry probe; dependency versions
+src/prospective/identity.py     pinned M2A identity; dependency-environment contract (pure)
+src/prospective/environment.py  read-only local git probe; dependency-environment capture
 src/prospective/provenance.py   PROVENANCE_V1 + fingerprint; pure ledger/run-log reconciliation
 src/application/prospective.py  activate / collect / health orchestration
 src/cli/prospective.py          python -m src.cli.prospective {activate,collect,health}
@@ -67,8 +71,21 @@ CLI has no root flag; tests inject temporary roots programmatically.
 ```
 python -m src.cli.prospective activate \
   --collector-git-commit <40-hex HEAD> \
-  --m2-preregistration-git-commit <40-hex frozen M2 commit>
+  --server-main-sha <40-hex from the preflight below>
 ```
+
+Immediately before, in the same checkout, the operator runs the **server-main
+preflight** (activation itself never contacts a remote):
+
+```
+git fetch origin
+git ls-remote origin refs/heads/main      # copy the full 40-hex SHA it prints
+git rev-parse HEAD refs/remotes/origin/main
+```
+
+`--server-main-sha` is not a research knob; it is the operator's assertion
+of the server's `main` at that moment. There is no option to name the M2
+commit, a fingerprint, or to skip, force or relax any check.
 
 Writes the empty `collect.lock` and then `activation.json`, once, and
 nothing else (the lock first, so an activated root always has the lock
@@ -79,14 +96,25 @@ complete — `activation.json` (a failure in the final fsync comes after the
 bytes were written, and `health` may then report `active`). Treat it as
 unconfirmed and follow "Failed or interrupted activation" under Failure
 recovery before any retry, collection or scheduler installation. Refused,
-writing nothing, when: either SHA is malformed; the working tree is dirty
-(including untracked files); HEAD is not the collector commit; the M2
-commit is not in HEAD's history; the live code differs from
-`COLLECTION_V1`; or the root is not empty (`already_activated`). The manifest records `activated_at` (one
-clock reading), the collection id and fingerprint, both commits, the
-holdout start, universe, interval, basis, provider, hypothesis and outcome
-spec fingerprints, the evaluation version and the Python, yfinance and
-pandas versions.
+writing nothing — not even the root directory — when (checked in this order,
+the first failure is the `reason`): either SHA is not a full lower-case
+40-hex SHA (`invalid_commit`); git cannot answer (`repository_unverified`);
+the checked-out branch is not `main` (`not_on_main`, including a detached
+HEAD); the working tree is dirty, including untracked files
+(`dirty_repository`); HEAD is not the collector commit
+(`collector_commit_mismatch`); `refs/remotes/origin/main` is missing
+(`origin_main_missing`) or is not HEAD — behind, ahead or diverged
+(`head_not_origin_main`); the server main is not HEAD
+(`server_main_mismatch`); the M2A binding fails (`m2_commit_missing`,
+`m2_commit_not_in_history`, `m2_preregistered_bytes_mismatch`,
+`m2_working_tree_bytes_mismatch`, `m2_bound_paths_changed`,
+`future_validation_fingerprint_mismatch`; every failing check is printed in
+`details=`); the live code differs from `COLLECTION_V1` (`config_mismatch`);
+the dependency environment cannot be read
+(`dependency_environment_unavailable`); or the root is not empty
+(`already_activated`). Activation makes no provider call and reads no market
+data. The manifest (schema `prospective_activation_v2`) is described under
+Activation identity binding.
 
 ### `collect` (scheduled; one finite run)
 
@@ -110,6 +138,9 @@ python -m src.cli.prospective collect
    the manifest's `collector_git_commit` (`dirty_collector_tree`,
    `collector_commit_mismatch`, or `collector_unverified` when git cannot
    be asked).
+6a. Recompute the dependency environment and require it to equal the
+   manifest's exactly (`dependency_environment_mismatch`, or
+   `dependency_environment_unverified` when it cannot be read canonically).
 7. Read every ledger partition strictly and reconcile it with the run log
    (see Provenance): `provenance_unknown` if a partition is unreadable,
    `provenance_invalid` if any record cannot be attributed. `degraded`
@@ -117,7 +148,9 @@ python -m src.cli.prospective collect
 8. Append and fsync a **run start** (`prospective_run_start_v1`: run id,
    start clock, collection and provenance-policy fingerprints, activation
    time, collector commit, universe). Steps 4–7 refuse with one run record
-   and no run start; every refusal happens before any provider exists.
+   (no symbols) and no run start; every refusal happens before any provider
+   exists, so a refused run makes no provider call and writes no claim or
+   outcome.
 9. For each symbol, in frozen order: re-check the window; build the
    snapshot (settled bars only); require the frozen provider, interval and
    basis; re-check the window on `built_at`; require every daily bar at
@@ -138,8 +171,8 @@ error.
 python -m src.cli.prospective health
 ```
 
-Never constructs a provider, never fetches, never runs git, never creates a
-file. Reads the manifest, then takes the lock **shared and non-blocking**
+Never constructs a provider, never fetches, never creates a file; it runs
+only the read-only, local git queries of the M2A binding (`m2_binding`). Reads the manifest, then takes the lock **shared and non-blocking**
 before reading the run log and the ledger strictly, so it never inspects
 files a collector is mutating: while `collect` holds the lock it reports
 `prospective_status=collect_in_progress` and `provenance=unknown`, never a
@@ -148,12 +181,14 @@ false corruption. Prints **Level 1** only:
 ```
 prospective_status=active root_exists=yes ledger_exists=yes collection_id=… collection_fingerprint=…
   manifest_fingerprint_match=yes live_configuration_match=yes activated_at=… collector_git_commit=…
-  m2_preregistration_git_commit=… universe=SPY,QQQ,IWM,TLT,GLD interval=1d basis=raw
+  m2_preregistration_git_commit=… m2_binding=ok dependency_environment=ok
+  universe=SPY,QQQ,IWM,TLT,GLD interval=1d basis=raw
 symbol=SPY readable=yes claims_total=… tails_registered=… claims_evaluable=… claims_insufficient=…
   outcomes_matured_h1=… outcomes_matured_h5=… outcomes_matured_h20=… pending=…
   missed_collections=… missed_dates=… last_tail=…
 runs_total=… runs_completed=… runs_outside_window=… runs_config_mismatch=…
-  runs_refused_collector=… runs_refused_provenance=… runs_interrupted=… last_run=… last_success=…
+  runs_refused_collector=… runs_refused_provenance=… runs_refused_dependencies=…
+  runs_interrupted=… last_run=… last_success=…
   symbol_statuses=ok:…,duplicate_already_exists:…
 provenance=ok provenance_reasons=none provenance_policy_fingerprint=… claims_checked=… outcomes_checked=…
 integrity=ok
@@ -167,8 +202,8 @@ Exit codes:
 
 | exit | when |
 | --- | --- |
-| `0` | not activated; or active with `provenance=ok` |
-| `1` | anything needing attention: `provenance=degraded` or `invalid`, `corrupt`, `config_mismatch`, `invalid_manifest`, `lock_missing` |
+| `0` | not activated; or active with `provenance=ok`, `m2_binding=ok` and `dependency_environment=ok` |
+| `1` | anything needing attention: `provenance=degraded` or `invalid`, `corrupt`, `config_mismatch`, `m2_binding` or `dependency_environment` not `ok`, `invalid_manifest`, `lock_missing` |
 | `2` | `collect_in_progress` — nothing was inspected; run `health` again after the collection |
 
 ## Status vocabulary
@@ -319,9 +354,13 @@ are integers only, and exception messages are never recorded.
 Template: `config/launchd/com.ai-market-analysis.prospective-collect.plist.example`.
 
 0. **Pinned collector clone.** Real collection runs from a dedicated clone
-   of the repository checked out (detached) at exactly the collector commit
+   of the repository checked out at exactly the collector commit
    recorded in `activation.json`, with its own virtualenv — not from the
-   development checkout. `collect` refuses unless that checkout is clean
+   development checkout. Activation requires that clone to be on its `main`
+   branch at the freshly fetched `origin/main` (see `activate`); afterwards
+   `collect` only requires HEAD == the collector commit and a clean tree, so
+   the clone may stay on `main` (never pulled) or be detached at that
+   commit. `collect` refuses unless that checkout is clean
    and its HEAD equals the manifest's `collector_git_commit`, so switching
    branch, pulling or editing the development repository can never change
    the collector silently; it can only stop it. The live root is resolved
@@ -341,14 +380,12 @@ Template: `config/launchd/com.ai-market-analysis.prospective-collect.plist.examp
    decision; Collection v1 ends at that point and its evidence stays as it
    is.
 
-   **Dependencies are recorded, not enforced.** The manifest records the
-   Python, yfinance and pandas versions, but `collect` does not compare
-   them: the same Git commit in a different environment could still behave
-   differently. Before activation one of these must be chosen and
-   recorded: (A) `collect` enforces the installed versions against the
-   activation manifest, or (B) the pinned clone runs from a dedicated
-   virtualenv whose exact dependencies (`requirements.txt`) are verified by
-   the activation checklist and never upgraded during v1.
+   **Dependencies are recorded and enforced (M2B, N-R11).** Activation
+   records the complete installed environment of the clone's virtualenv and
+   every `collect` refuses on any difference (see Dependency environment).
+   Upgrading, adding or removing any package in that virtualenv — or
+   changing the Python patch version — stops Collection v1; it is never
+   silently absorbed.
 1. Copy the template to `~/Library/LaunchAgents/`, replace
    `__VENV_PYTHON__` and `__REPOSITORY__` with absolute paths **of the
    pinned clone**, and `mkdir -p <pinned clone>/data/prospective/logs`.
@@ -467,10 +504,115 @@ restored copy strictly.
   against a temporary `--outcome-root`, inside the window) rather than
   adding detail to this subsystem's output.
 
+## Activation identity binding (M2B)
+
+M2B closes N6 (Git identity enforced, not merely recorded) and N-R11
+(dependency drift). It changes no research definition: `COLLECTION_V1`,
+`PROVENANCE_V1` and `FUTURE_VALIDATION_V1` keep their fingerprints.
+
+**The pinned M2A identity** (`src/prospective/identity.py`) is
+`M2A_PREREGISTRATION_COMMIT = 3dac81078b31c4c5856419faae4f2749cc43ede5`,
+`FUTURE_VALIDATION_V1` fingerprint
+`79f7c4da914727ca8884e594ca997b2ab8dfc1a95a7279b110a7cef69cd6d2ab`, and three
+bound scientific paths with the SHA-256 of their bytes at that commit:
+
+| path | SHA-256 at the commit |
+|---|---|
+| `docs/research/future_validation_v1.md` | `3cb6fe9b2968c258fa513cf826efbd868b9b7326b9318af615047c0d3307fb19` |
+| `src/research/future_validation.py` | `b39d33aeb867c7bb9676c0f39fc910856633b4117e47f77fe0a0c36e84fe6ccf` |
+| `src/research/future_validation_engine.py` | `5212d48f234844a8079e3270ae19ef6a9ce057a46530a944668e73772419c5f2` |
+
+The binding holds when the commit object exists, it is HEAD or an ancestor
+of HEAD, each path is a blob with exactly that SHA-256 at the commit,
+`git diff --quiet <commit> HEAD -- <paths>` reports no change, each
+working-tree file (a regular file, not a symlink) has the same SHA-256, and
+the live `FUTURE_VALIDATION_V1` has the pinned fingerprint. The runner,
+store and CLI of M2A are deliberately not bound: later non-scientific
+hardening of them is legitimate.
+
+**Authoritative main.** Activation never fetches. It verifies locally that
+the branch is `main`, the tree is clean, and HEAD equals the named collector
+commit, the already-fetched `refs/remotes/origin/main`, and the operator's
+`--server-main-sha` from the preflight — so HEAD is the server's `main` as of
+the preflight, and the M2A commit is in its history.
+
+**Manifest v2** (`prospective_activation_v2`, canonical JSON, exact keys):
+`activated_at`; `collection_id`, `collection_fingerprint`,
+`provenance_policy_fingerprint`; `collector_git_commit`,
+`origin_main_git_commit`, `server_main_git_commit` (all equal),
+`git_branch` (`main`), `git_tree_clean` (`true`);
+`m2_preregistration_git_commit`, `m2_preregistration_in_history` (`true`),
+`future_validation_fingerprint`, `m2_bound_paths` (`[{path, sha256}]`, sorted);
+the M1 fields (`holdout_start`, `universe`, `interval`, `basis`, `provider`,
+`hypothesis_fingerprints`, `outcome_spec_fingerprints`,
+`evaluation_version`); and `dependency_environment`. Decoding refuses an
+unknown schema (including v1 — no v1 manifest was ever written, so there is
+no migration), a missing or extra key, a wrong type, a short SHA, a
+malformed SHA-256, an M2 identity other than the pin, inconsistent recorded
+proof (e.g. `server_main_git_commit` ≠ the collector commit), and any
+non-canonical byte. It holds no research value and no market data.
+
+**Dependency environment.** Recorded at activation, never hard-coded in
+source: `{schema: prospective_dependency_environment_v1,
+python_implementation, python_version, packages: [{name, version}],
+fingerprint}`. `packages` is every distribution `importlib.metadata`
+finds on the interpreter's `sys.path`, names PEP 503-normalised
+(lower case, runs of `-_.` → `-`) and sorted; two distributions that
+normalise to one name are refused, never resolved. No path or timestamp is
+included. The fingerprint is SHA-256 of the canonical JSON (sorted keys,
+compact, ASCII) of `{schema, python_implementation, python_version,
+packages: [[name, version], …]}`. Discovery order cannot change it; adding,
+removing or changing any package, the Python version (including the patch
+level) or the implementation does.
+Because discovery follows `sys.path`, run `activate` exactly as the
+scheduler will run `collect`: the pinned clone's virtualenv interpreter,
+the clone's root as working directory (the plist's `WorkingDirectory`), and
+no `PYTHONPATH`. A different interpreter, working directory with extra
+distribution metadata, or path makes `collect` refuse — it never absorbs it.
+
+*Why the whole environment.* Transitive libraries (HTTP, parsing, time
+zones, numerics) can change provider behaviour, timestamps and numbers as
+much as yfinance or pandas can. Collection v1 is meant to stay frozen, so
+any drift fails closed. The cost is that even a harmless upgrade (e.g. of
+`pip`) stops collection; an intentional environment change requires a new,
+explicitly reviewed collection version and procedure rather than silently
+changing v1.
+
+**Future validation.** Before it captures, re-derives or opens anything,
+`python -m src.cli.future_validation {status,run}` requires the manifest to
+decode as v2 (so it names the pinned commit, fingerprint and bound hashes),
+its `future_validation_fingerprint` to equal the live definition's, the
+working tree to be clean, and the M2A binding to hold in the local
+repository. HEAD need not equal the activation HEAD — later operational
+commits are allowed — and no network is needed years later: authoritative
+`main` was proven once, at activation, and is recorded in the manifest.
+`status` reports `m2_binding=ok|mismatch|unavailable` and an invalid
+validity on failure; `run` refuses `m2_binding_mismatch,<reasons>` before
+any Level-3 read. The manifest is read once per operation: an absent or
+unreadable one refuses at once (`not_activated` / `invalid_manifest`), and
+after every capture or recapture the snapshot's `activation.json` must be
+byte-identical to the bound manifest (`manifest_changed` otherwise) and the
+repository binding is re-checked, before any result verification, unlock
+recovery or Level-3 read.
+
+**Health** adds `m2_binding` (local Git; also before activation) and
+`dependency_environment` (installed vs the manifest; `unavailable` before
+activation), each `ok`, `mismatch` or `unavailable`, and
+`runs_refused_dependencies`; it exits `1` unless both are `ok` on an active
+root.
+
+**Durability.** The manifest write is unchanged: the lock then the
+manifest, each `O_EXCL`, written, flushed and `fsync`ed, then the root
+directory is `fsync`ed. Those calls narrow but do not eliminate the window
+in which a power loss can lose a just-written file; that is why any write
+or fsync error reports `activation_write_failed` (durability unconfirmed),
+and a retry is refused (`already_activated`) because the root is not empty
+— never a second activation.
+
 ## Relationship to future validation (M2)
 
-M2 — the future-validation pre-registration — must be frozen and
-remote-durable before activation, and activation records its commit.
+M2 — the future-validation pre-registration — is frozen and merged;
+activation verifies and records its pinned commit and bound files (M2B).
 Collection answers no question by itself; it only accumulates claims whose
 outcomes stay unread until M2's frozen procedure opens them, once. That
 procedure will require provenance `ok`, or `degraded` with the excluded

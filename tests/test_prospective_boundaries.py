@@ -77,8 +77,8 @@ def called(node: ast.AST) -> list[str]:
 
 def test_the_package_has_exactly_its_modules():
     assert [p.name for p in PACKAGE_FILES] == [
-        "__init__.py", "definition.py", "environment.py", "provenance.py", "records.py",
-        "store.py"]
+        "__init__.py", "definition.py", "environment.py", "identity.py", "provenance.py",
+        "records.py", "store.py"]
 
 
 @pytest.mark.parametrize("path", PACKAGE_FILES, ids=lambda p: p.name)

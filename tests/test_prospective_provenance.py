@@ -62,8 +62,8 @@ from tests.prospective_fixtures import (  # noqa: F401 - autouse guard
     COLLECTOR_SHA,
     LIVE_ROOT,
     M2_SHA,
+    REAL_DEFAULT_REPOSITORY_PROBE,
     SPY_ONLY,
-    VERSIONS,
     Clock,
     ProbeDouble,
     SessionProvider,
@@ -93,8 +93,8 @@ _IDS = itertools.count()
 
 def activated(tmp_path, *, definition=COLLECTION_V1, at=ACTIVATED_AT):
     store = build_prospective_store(tmp_path / "v1")
-    activate(store, collector_git_commit=COLLECTOR_SHA, m2_preregistration_git_commit=M2_SHA,
-             repository=ProbeDouble(), versions=VERSIONS, now=lambda: at, definition=definition)
+    activate(store, collector_git_commit=COLLECTOR_SHA, server_main_git_commit=COLLECTOR_SHA,
+             repository=ProbeDouble(), now=lambda: at, definition=definition)
     return store
 
 
@@ -137,7 +137,7 @@ SPY = LedgerPartition(symbol="SPY", interval=Interval.DAY_1, basis=PriceBasis.RA
 
 def cli(argv, root, *, provider=None, now=None, repository=None):
     out, err = io.StringIO(), io.StringIO()
-    kwargs = dict(root=root, stdout=out, stderr=err, versions=VERSIONS,
+    kwargs = dict(root=root, stdout=out, stderr=err,
                   repository=repository if repository is not None else ProbeDouble())
     if provider is not None:
         kwargs["provider_factory"] = lambda: provider
@@ -1180,9 +1180,13 @@ class TestCollectorIdentity:
         assert parse(lines[-1])["run_status"] == "collector_commit_mismatch"
         assert provider.calls == []
 
-    def test_the_default_probe_is_the_real_repository_and_refuses_a_fake_commit(self, tmp_path):
+    def test_the_default_probe_is_the_real_repository_and_refuses_a_fake_commit(
+            self, tmp_path, monkeypatch):
         """Without an injected probe the collector inspects this repository, whose
-        HEAD is not the fixture's collector commit: refused, no provider."""
+        HEAD is not the fixture's collector commit: refused, no provider. (The
+        offline guard replaces the default probe; this test restores the real one.)"""
+        monkeypatch.setattr("src.application.prospective.default_repository_probe",
+                            REAL_DEFAULT_REPOSITORY_PROBE)
         store = activated(tmp_path)
         built = []
         report = collect(store, provider_factory=lambda: built.append(1),
@@ -1287,8 +1291,8 @@ class TestLocking:
         monkeypatch.setattr("src.prospective.store.os.open", failing)
         with pytest.raises(ActivationRefused) as caught:
             activate(store, collector_git_commit=COLLECTOR_SHA,
-                     m2_preregistration_git_commit=M2_SHA, repository=ProbeDouble(),
-                     versions=VERSIONS, now=lambda: ACTIVATED_AT)
+                     server_main_git_commit=COLLECTOR_SHA, repository=ProbeDouble(),
+                     now=lambda: ACTIVATED_AT)
         assert caught.value.reason == "activation_write_failed"
         monkeypatch.setattr("src.prospective.store.os.open", real_open)
         assert not store.manifest_path.exists()
@@ -1308,16 +1312,16 @@ class TestLocking:
         monkeypatch.setattr("src.prospective.store.os.open", failing)
         with pytest.raises(ActivationRefused) as caught:
             activate(store, collector_git_commit=COLLECTOR_SHA,
-                     m2_preregistration_git_commit=M2_SHA, repository=ProbeDouble(),
-                     versions=VERSIONS, now=lambda: ACTIVATED_AT)
+                     server_main_git_commit=COLLECTOR_SHA, repository=ProbeDouble(),
+                     now=lambda: ACTIVATED_AT)
         assert caught.value.reason == "activation_write_failed"
         monkeypatch.setattr("src.prospective.store.os.open", real_open)
         assert sorted(p.name for p in store.root.iterdir()) == ["collect.lock"]
         assert health(store).status == "not_activated"
         with pytest.raises(ActivationRefused) as again:
             activate(store, collector_git_commit=COLLECTOR_SHA,
-                     m2_preregistration_git_commit=M2_SHA, repository=ProbeDouble(),
-                     versions=VERSIONS, now=lambda: ACTIVATED_AT)
+                     server_main_git_commit=COLLECTOR_SHA, repository=ProbeDouble(),
+                     now=lambda: ACTIVATED_AT)
         assert again.value.reason == "already_activated"
 
 

@@ -1,10 +1,13 @@
 """Prospective Collection v1: activate once, collect inside the window, report health blind.
 
-    activate  -> verify repository + live config -> collect.lock, then activation.json, once
+    activate  -> verify repository (main, clean, HEAD == named collector == origin/main ==
+                 operator-verified server main), the pinned M2A binding, live config and
+                 the dependency environment -> collect.lock, then activation.json, once
                  (no network)
     collect   -> manifest -> exclusive lock (bounded wait)
                  -> run-log integrity -> fingerprint -> ET window -> collector identity
-                    (clean tree, HEAD == manifest commit) -> ledger integrity + provenance
+                    (clean tree, HEAD == manifest commit) -> dependency environment
+                    (== the activation's) -> ledger integrity + provenance
                  -> run start (fsynced)
                  -> per symbol: window -> build_snapshot -> validate -> activation boundary
                     -> missed tails -> current-tail rule -> refresh_outcomes (unchanged)
@@ -31,7 +34,8 @@ ledger under ``data/prospective/v1/ledger`` -- never the dashboard's
 * settled post-activation bars that were never claimed are reported as
   missed, as operational metadata, and are never claimed afterwards;
 * nothing is fetched unless the running code is the activated collector
-  commit with a clean tree, and every existing ledger record reconciles to
+  commit with a clean tree, the installed dependency environment is exactly
+  the one activation recorded, and every existing ledger record reconciles to
   this collection's own run log (:mod:`src.prospective.provenance`): a
   record written by any other tool -- e.g. the generic ``outcome_refresh``
   pointed at this ledger -- makes provenance ``invalid`` and stops
@@ -61,11 +65,17 @@ from typing import Callable, Mapping, Protocol
 from src.data.models import Interval
 from src.outcomes import EVALUATION_VERSION, LedgerCorruption, LedgerPartition
 from src.prospective import (
+    AUTHORITATIVE_BRANCH,
     COLLECTION_V1,
+    M2A_BOUND_PATHS,
+    M2A_FUTURE_VALIDATION_FINGERPRINT,
+    M2A_PREREGISTRATION_COMMIT,
     ActivationManifest,
     CollectionDefinition,
     CollectionStatus,
     DefinitionError,
+    DependencyEnvironment,
+    DependencyEnvironmentError,
     GitRepositoryProbe,
     ManifestCorruption,
     ManifestExistsError,
@@ -85,7 +95,7 @@ from src.prospective import (
     RunStart,
     RunStatus,
     SymbolRun,
-    dependency_versions,
+    capture_dependency_environment,
     first_non_midnight,
     in_collection_window,
     is_current_tail,
@@ -97,6 +107,7 @@ from src.prospective import (
     validate_commit_sha,
     verify_provenance,
 )
+from src.research.future_validation import FUTURE_VALIDATION_V1
 
 from .errors import ApplicationError, FailureKind
 from .outcomes import OUTCOME_SPECS, build_outcome_ledger, refresh_outcomes
@@ -142,15 +153,33 @@ class ProspectiveError(RuntimeError):
 class ActivationRefused(ProspectiveError):
     """Activation was refused; nothing was written. ``reason`` is a stable code."""
 
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(self, reason: str, message: str, details: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.reason = reason
+        self.details = details
 
 
 class RepositoryProbe(Protocol):
+    """Read-only, local answers about one repository (see :class:`GitRepositoryProbe`)."""
+
     def repository_state(self) -> RepositoryState: ...
 
     def is_ancestor_of_head(self, commit: str) -> bool: ...
+
+    def current_branch(self) -> str | None: ...
+
+    def origin_main(self) -> str | None: ...
+
+    def commit_exists(self, commit: str) -> bool: ...
+
+    def blob_sha256(self, commit: str, path: str) -> str | None: ...
+
+    def working_file_sha256(self, path: str) -> str | None: ...
+
+    def paths_unchanged_since(self, commit: str, paths) -> bool: ...
+
+
+DependencySource = Callable[[], DependencyEnvironment]
 
 
 def build_prospective_store(root: str | Path | None = None) -> ProspectiveStore:
@@ -164,6 +193,19 @@ def default_repository_probe() -> GitRepositoryProbe:
 
 def collection_definition() -> CollectionDefinition:
     return COLLECTION_V1
+
+
+def current_dependency_environment() -> DependencyEnvironment:
+    """The running interpreter's dependency environment; :class:`DependencyEnvironmentError`."""
+    return capture_dependency_environment()
+
+
+def _dependencies(source: DependencySource | None) -> DependencyEnvironment:
+    return (current_dependency_environment if source is None else source)()
+
+
+def _probe(repository: RepositoryProbe | None) -> RepositoryProbe:
+    return default_repository_probe() if repository is None else repository
 
 
 # -- live configuration -------------------------------------------------------------------
@@ -216,7 +258,43 @@ def manifest_mismatches(
         mismatches.append("collection_id")
     if manifest.collection_fingerprint != definition.fingerprint:
         mismatches.append("collection_fingerprint")
+    if manifest.provenance_policy_fingerprint != provenance_policy_for(definition).fingerprint:
+        mismatches.append("provenance_policy_fingerprint")
     return tuple(mismatches)
+
+
+# -- M2A binding ----------------------------------------------------------------------------
+
+
+def m2_binding_mismatches(repository: RepositoryProbe) -> tuple[str, ...]:
+    """Every way the repository differs from the pinned M2A pre-registration; ``()`` if none.
+
+    The pinned commit must exist and be in HEAD's history; each bound path
+    must hold its pinned bytes at that commit, in HEAD (no change between the
+    commit and HEAD) and in the working tree; and the live
+    ``FUTURE_VALIDATION_V1`` must have the pinned fingerprint. Read-only and
+    local; raises :class:`RepositoryProbeError` when Git cannot answer.
+    """
+    found: list[str] = []
+    if FUTURE_VALIDATION_V1.fingerprint != M2A_FUTURE_VALIDATION_FINGERPRINT:
+        found.append("future_validation_fingerprint_mismatch")
+    commit = M2A_PREREGISTRATION_COMMIT
+    if not repository.commit_exists(commit):
+        return (*found, "m2_commit_missing")
+    if not repository.is_ancestor_of_head(commit):
+        found.append("m2_commit_not_in_history")
+    for bound in M2A_BOUND_PATHS:
+        if repository.blob_sha256(commit, bound.path) != bound.sha256:
+            found.append(f"m2_preregistered_bytes_mismatch:{bound.path}")
+        if repository.working_file_sha256(bound.path) != bound.sha256:
+            found.append(f"m2_working_tree_bytes_mismatch:{bound.path}")
+    if not repository.paths_unchanged_since(commit, [bound.path for bound in M2A_BOUND_PATHS]):
+        found.append("m2_bound_paths_changed")
+    return tuple(found)
+
+
+def _code(mismatch: str) -> str:
+    return mismatch.split(":", 1)[0]
 
 
 # -- activation -----------------------------------------------------------------------------
@@ -226,50 +304,90 @@ def activate(
     store: ProspectiveStore,
     *,
     collector_git_commit: str,
-    m2_preregistration_git_commit: str,
+    server_main_git_commit: str,
     repository: RepositoryProbe,
-    versions: Mapping[str, str],
+    dependency_environment: DependencySource | None = None,
     now: Clock = _utc_now,
     definition: CollectionDefinition = COLLECTION_V1,
 ) -> ActivationManifest:
-    """Write the activation manifest once. No provider, no claim, no outcome.
+    """Write the activation manifest once. No provider, no claim, no outcome, no network.
 
-    Refused (:class:`ActivationRefused`, nothing written) when either SHA is
-    malformed, the working tree is dirty, HEAD is not the named collector
-    commit, the M2 pre-registration commit is not in HEAD's history, the
-    running code differs from the frozen definition, or the root is not
-    empty. Writes the lock file first and the manifest second, so an
+    ``server_main_git_commit`` is the operator's assertion of the server's
+    ``main``, taken from ``git ls-remote origin refs/heads/main`` immediately
+    after ``git fetch origin``; activation itself never contacts a remote.
+
+    Refused (:class:`ActivationRefused`, nothing written -- the root is not
+    even created) unless, in this order: both SHAs are full 40-hex; Git can
+    answer; the checked-out branch is ``main``; the working tree is clean;
+    HEAD is the named collector commit; the fetched ``refs/remotes/origin/main``
+    exists and equals HEAD; the server main equals HEAD; the pinned M2A
+    binding holds (:func:`m2_binding_mismatches`); the running code matches
+    the frozen definition; the dependency environment can be read; and the
+    root is empty. Writes the lock file first and the manifest second, so an
     activated root always has the lock ``health`` and ``collect`` need.
     ``activation_write_failed`` means durability could not be confirmed: the
     root may hold the lock and possibly a partial or complete manifest.
     """
     try:
         collector = validate_commit_sha(collector_git_commit, "collector_git_commit")
-        m2 = validate_commit_sha(m2_preregistration_git_commit, "m2_preregistration_git_commit")
+        server_main = validate_commit_sha(server_main_git_commit, "server_main_git_commit")
     except DefinitionError as exc:
         raise ActivationRefused("invalid_commit", str(exc)) from exc
-    state = repository.repository_state()
+    try:
+        state = repository.repository_state()
+        branch = repository.current_branch()
+        origin_main = repository.origin_main()
+    except RepositoryProbeError as exc:
+        raise ActivationRefused("repository_unverified",
+                                "git could not report the repository's state") from exc
+    if branch != AUTHORITATIVE_BRANCH:
+        raise ActivationRefused("not_on_main", "the checked-out branch is not main")
     if not state.clean:
         raise ActivationRefused("dirty_repository",
                                 "the working tree has uncommitted or untracked changes")
     if state.head != collector:
         raise ActivationRefused("collector_commit_mismatch",
                                 "HEAD is not the named collector commit")
-    if not repository.is_ancestor_of_head(m2):
-        raise ActivationRefused("m2_commit_not_in_history",
-                                "the M2 pre-registration commit is not in HEAD's history")
+    if origin_main is None:
+        raise ActivationRefused("origin_main_missing",
+                                "refs/remotes/origin/main does not exist; fetch origin first")
+    if origin_main != state.head:
+        raise ActivationRefused("head_not_origin_main",
+                                "HEAD is not the fetched origin/main (behind, ahead or diverged)")
+    if server_main != state.head:
+        raise ActivationRefused("server_main_mismatch",
+                                "HEAD is not the server main named by the preflight")
+    try:
+        binding = m2_binding_mismatches(repository)
+    except RepositoryProbeError as exc:
+        raise ActivationRefused("repository_unverified",
+                                "git could not verify the M2A binding") from exc
+    if binding:
+        raise ActivationRefused(_code(binding[0]),
+                                "the M2A pre-registration binding fails: " + ",".join(binding),
+                                binding)
     live = live_configuration_mismatches(definition)
     if live:
         raise ActivationRefused("config_mismatch",
                                 "running code differs from the frozen definition: "
                                 + ",".join(live))
+    try:
+        environment = _dependencies(dependency_environment)
+    except DependencyEnvironmentError as exc:
+        raise ActivationRefused("dependency_environment_unavailable",
+                                "the installed dependency environment could not be read") from exc
     activated_at = _aware(now(), "activation clock")
     manifest = ActivationManifest(
         activated_at=activated_at,
         collection_id=definition.collection_id,
         collection_fingerprint=definition.fingerprint,
+        provenance_policy_fingerprint=provenance_policy_for(definition).fingerprint,
         collector_git_commit=collector,
-        m2_preregistration_git_commit=m2,
+        origin_main_git_commit=origin_main,
+        server_main_git_commit=server_main,
+        m2_preregistration_git_commit=M2A_PREREGISTRATION_COMMIT,
+        future_validation_fingerprint=M2A_FUTURE_VALIDATION_FINGERPRINT,
+        m2_bound_paths=M2A_BOUND_PATHS,
         holdout_start=definition.holdout_start,
         universe=definition.universe,
         interval=definition.interval,
@@ -278,7 +396,7 @@ def activate(
         hypothesis_fingerprints=definition.hypothesis_fingerprints,
         outcome_spec_fingerprints=definition.outcome_spec_fingerprints,
         evaluation_version=definition.evaluation_version,
-        dependency_versions=dict(versions),
+        dependency_environment=environment,
     )
     try:
         store.write_manifest(manifest)
@@ -299,10 +417,6 @@ def activate(
             "inspect it by hand before any retry, collection or scheduler installation",
         ) from exc
     return manifest
-
-
-def current_dependency_versions() -> dict[str, str]:
-    return dependency_versions()
 
 
 # -- collection -----------------------------------------------------------------------------
@@ -348,15 +462,17 @@ def collect(
     lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
     lock_monotonic: Callable[[], float] = time.monotonic,
     lock_sleep: Callable[[float], None] = time.sleep,
+    dependency_environment: DependencySource | None = None,
 ) -> CollectionReport:
     """One collection run over the frozen universe. See the module docstring.
 
     Everything up to the run start happens under the exclusive lock and
     before any provider exists, in this order: run-log integrity (a corrupt
     log is never appended to), configuration, window, collector identity
-    (clean tree and HEAD == the manifest's collector commit), ledger
+    (clean tree and HEAD == the manifest's collector commit), dependency
+    environment (recomputed and exactly equal to the manifest's), ledger
     integrity and provenance. Any failure appends one refusal record (when
-    the log is healthy) and stops.
+    the log is healthy; it has no symbols and no run start) and stops.
     """
     try:
         manifest = store.read_manifest()
@@ -369,7 +485,7 @@ def collect(
         with store.exclusive_lock(timeout=lock_timeout, monotonic=lock_monotonic,
                                   sleep=lock_sleep):
             return _collect_locked(store, manifest, definition, provider_factory, now,
-                                   run_id_factory, repository)
+                                   run_id_factory, repository, dependency_environment)
     except RootLockedError:
         return CollectionReport("locked", None)
     except LockMissingError:
@@ -380,9 +496,8 @@ def _collector_identity(
     manifest: ActivationManifest, repository: RepositoryProbe | None
 ) -> RunStatus | None:
     """The refusal for a collector that is not the activated one, or ``None``."""
-    probe = repository if repository is not None else default_repository_probe()
     try:
-        state = probe.repository_state()
+        state = _probe(repository).repository_state()
     except RepositoryProbeError:
         return RunStatus.COLLECTOR_UNVERIFIED
     if not state.clean:
@@ -392,8 +507,28 @@ def _collector_identity(
     return None
 
 
+def dependency_environment_status(
+    manifest: ActivationManifest, source: DependencySource | None = None
+) -> str:
+    """``ok``, ``mismatch`` or ``unavailable``: the installed environment vs the manifest's."""
+    try:
+        current = _dependencies(source)
+    except DependencyEnvironmentError:
+        return "unavailable"
+    recorded = manifest.dependency_environment
+    if current != recorded or current.fingerprint != recorded.fingerprint:
+        return "mismatch"
+    return "ok"
+
+
+_DEPENDENCY_REFUSALS = {
+    "mismatch": RunStatus.DEPENDENCY_ENVIRONMENT_MISMATCH,
+    "unavailable": RunStatus.DEPENDENCY_ENVIRONMENT_UNVERIFIED,
+}
+
+
 def _collect_locked(store, manifest, definition, provider_factory, now, run_id_factory,
-                    repository) -> CollectionReport:
+                    repository, dependency_environment) -> CollectionReport:
     started_at = _aware(now(), "clock")
     try:
         run_log = store.read_run_log()
@@ -406,7 +541,10 @@ def _collect_locked(store, manifest, definition, provider_factory, now, run_id_f
     elif not in_collection_window(started_at):
         decision = RunStatus.OUTSIDE_COLLECTION_WINDOW
     else:
-        decision = _collector_identity(manifest, repository) or RunStatus.COMPLETED
+        decision = (_collector_identity(manifest, repository)
+                    or _DEPENDENCY_REFUSALS.get(
+                        dependency_environment_status(manifest, dependency_environment))
+                    or RunStatus.COMPLETED)
     if decision is RunStatus.COMPLETED:
         provenance, _, _ = evaluate_provenance(store, manifest, run_log, definition)
         if provenance.status == "unknown":
@@ -717,6 +855,8 @@ class HealthReport:
     live_configuration_match: bool | None = None
     collector_git_commit: str | None = None
     m2_preregistration_git_commit: str | None = None
+    m2_binding: str = "unavailable"
+    dependency_environment: str = "unavailable"
     symbols: tuple[SymbolHealth, ...] = ()
     runs_total: int = 0
     runs_completed: int = 0
@@ -724,6 +864,7 @@ class HealthReport:
     runs_config_mismatch: int = 0
     runs_refused_collector: int = 0
     runs_refused_provenance: int = 0
+    runs_refused_dependencies: int = 0
     runs_interrupted: int = 0
     last_run: datetime | None = None
     last_success: datetime | None = None
@@ -734,10 +875,23 @@ _COLLECTOR_REFUSALS = frozenset({RunStatus.COLLECTOR_COMMIT_MISMATCH,
                                  RunStatus.DIRTY_COLLECTOR_TREE,
                                  RunStatus.COLLECTOR_UNVERIFIED})
 _PROVENANCE_REFUSALS = frozenset({RunStatus.PROVENANCE_INVALID, RunStatus.PROVENANCE_UNKNOWN})
+_DEPENDENCY_REFUSAL_STATUSES = frozenset(_DEPENDENCY_REFUSALS.values())
+
+
+def m2_binding_status(repository: RepositoryProbe | None = None) -> str:
+    """``ok``, ``mismatch`` or ``unavailable`` (Git could not answer) for the M2A binding."""
+    try:
+        return "mismatch" if m2_binding_mismatches(_probe(repository)) else "ok"
+    except RepositoryProbeError:
+        return "unavailable"
 
 
 def health(
-    store: ProspectiveStore, *, definition: CollectionDefinition = COLLECTION_V1
+    store: ProspectiveStore,
+    *,
+    definition: CollectionDefinition = COLLECTION_V1,
+    repository: RepositoryProbe | None = None,
+    dependency_environment: DependencySource | None = None,
 ) -> HealthReport:
     """Read-only, offline. Never constructs a provider; never creates anything.
 
@@ -745,8 +899,13 @@ def health(
     lock: while a collector holds the root exclusively, the report is
     ``collect_in_progress`` with provenance ``unknown`` -- never a false
     corruption or provenance finding from a half-written state.
+
+    ``m2_binding`` (local Git, before and after activation) and
+    ``dependency_environment`` (installed vs the manifest's; ``unavailable``
+    before activation) are ``ok``, ``mismatch`` or ``unavailable``.
     """
     base = dict(
+        m2_binding=m2_binding_status(repository),
         root_exists=store.root_exists(),
         ledger_exists=store.ledger_exists(),
         collection_id=definition.collection_id,
@@ -772,6 +931,7 @@ def health(
         manifest_fingerprint_match=not manifest_mismatches(manifest, definition),
         collector_git_commit=manifest.collector_git_commit,
         m2_preregistration_git_commit=manifest.m2_preregistration_git_commit,
+        dependency_environment=dependency_environment_status(manifest, dependency_environment),
     )
     try:
         with store.shared_lock():
@@ -873,6 +1033,8 @@ def _health_locked(store, manifest, definition, base, identity) -> HealthReport:
         runs_config_mismatch=sum(1 for r in runs if r.run_status is RunStatus.CONFIG_MISMATCH),
         runs_refused_collector=sum(1 for r in runs if r.run_status in _COLLECTOR_REFUSALS),
         runs_refused_provenance=sum(1 for r in runs if r.run_status in _PROVENANCE_REFUSALS),
+        runs_refused_dependencies=sum(1 for r in runs
+                                      if r.run_status in _DEPENDENCY_REFUSAL_STATUSES),
         runs_interrupted=sum(1 for entry in run_log if isinstance(entry, RunStart)
                              and entry.run_id not in completed_ids),
         last_run=runs[-1].finished_at if runs else None,
@@ -893,8 +1055,11 @@ __all__ = [
     "collection_definition",
     "live_configuration_mismatches",
     "manifest_mismatches",
+    "m2_binding_mismatches",
+    "m2_binding_status",
+    "dependency_environment_status",
     "activate",
-    "current_dependency_versions",
+    "current_dependency_environment",
     "CollectionReport",
     "ProvenanceReport",
     "collect",

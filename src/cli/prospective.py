@@ -1,6 +1,6 @@
 """Prospective Collection v1: activate once, collect in the ET window, report health blind.
 
-    python -m src.cli.prospective activate --collector-git-commit SHA --m2-preregistration-git-commit SHA
+    python -m src.cli.prospective activate --collector-git-commit SHA --server-main-sha SHA
     python -m src.cli.prospective collect
     python -m src.cli.prospective health
 
@@ -10,8 +10,14 @@ hypotheses, horizons, root and collection window are the frozen
 tests inject a temporary root and fakes through :func:`main`'s keyword
 arguments, never through the command line.
 
-``activate`` makes no provider call and creates no claim; it writes the
-activation manifest once. ``collect`` refuses outside 00:30-09:00
+``activate`` makes no provider call, no network request and creates no
+claim; it writes the activation manifest once. The M2A pre-registration it
+binds is hard-pinned (``M2A_PREREGISTRATION_COMMIT``), never an argument.
+``--server-main-sha`` is not a research knob but a remote-state assertion:
+the full SHA printed by ``git ls-remote origin refs/heads/main`` immediately
+after ``git fetch origin``; activation refuses unless it equals HEAD and the
+fetched ``origin/main``. No option skips, forces or relaxes a check.
+``collect`` refuses outside 00:30-09:00
 America/New_York before any provider exists. ``health`` is offline and
 read-only. Every line is ``key=value`` and Level 1: identities, clocks,
 counts, bar timestamps and status classes -- never a price, a return or a
@@ -21,15 +27,17 @@ value; only class names are printed).
 Exit codes: ``0`` done; ``1`` a collection completed with at least one
 symbol not collected, or health found a problem; ``2`` usage error or a
 refusal (not activated, locked, lock missing, corrupt run log, outside the
-window, configuration mismatch, collector identity, provenance invalid or
-unknown, activation refused).
+window, configuration mismatch, collector identity, dependency environment,
+provenance invalid or unknown, activation refused).
 
 ``health`` exits ``0`` when the root is not activated, or active with
-``provenance=ok``; ``2`` when a collection holds the root
+``provenance=ok``, ``m2_binding=ok`` and ``dependency_environment=ok``;
+``2`` when a collection holds the root
 (``collect_in_progress``: nothing was inspected -- run it again
 afterwards); ``1`` for everything else that needs attention
 (``provenance=degraded`` or ``invalid``, corruption, configuration
-mismatch, invalid manifest, missing lock).
+mismatch, M2A binding or dependency environment not ``ok``, invalid
+manifest, missing lock).
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime
-from typing import Callable, Mapping, Sequence, TextIO
+from typing import Callable, Sequence, TextIO
 
 from src.application.prospective import (
     ActivationRefused,
@@ -47,7 +55,6 @@ from src.application.prospective import (
     activate,
     build_prospective_store,
     collect,
-    current_dependency_versions,
     default_repository_probe,
     health,
 )
@@ -77,8 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     activation.add_argument("--collector-git-commit", required=True, metavar="SHA",
                             help="full 40-hex SHA that HEAD must equal")
-    activation.add_argument("--m2-preregistration-git-commit", required=True, metavar="SHA",
-                            help="full 40-hex SHA of the frozen M2 pre-registration")
+    activation.add_argument("--server-main-sha", required=True, metavar="SHA",
+                            help="full 40-hex SHA of the server's main from a fresh "
+                                 "`git fetch origin` + `git ls-remote origin refs/heads/main`")
     commands.add_parser("collect", help="one collection run inside 00:30-09:00 ET")
     commands.add_parser("health", help="offline, read-only Level-1 health report")
     return parser
@@ -108,19 +116,23 @@ def provenance_fields(report: ProvenanceReport) -> dict[str, object]:
 # -- activate --------------------------------------------------------------------------------
 
 
-def _run_activate(args, store, *, repository, versions, now, stdout, stderr) -> int:
+def _run_activate(args, store, *, repository, dependency_environment, now, stdout,
+                  stderr) -> int:
     kwargs = {} if now is None else {"now": now}
     try:
         manifest = activate(
             store,
             collector_git_commit=args.collector_git_commit,
-            m2_preregistration_git_commit=args.m2_preregistration_git_commit,
+            server_main_git_commit=args.server_main_sha,
             repository=repository if repository is not None else default_repository_probe(),
-            versions=versions if versions is not None else current_dependency_versions(),
+            dependency_environment=dependency_environment,
             **kwargs,
         )
     except ActivationRefused as exc:
-        print(format_line({"activation": "refused", "reason": exc.reason}), file=stdout)
+        fields = {"activation": "refused", "reason": exc.reason}
+        if exc.details:
+            fields["details"] = ",".join(exc.details)
+        print(format_line(fields), file=stdout)
         print(f"{PROG}: activation refused: {exc}", file=stderr)
         return EXIT_REFUSED
     print(format_line({
@@ -129,7 +141,10 @@ def _run_activate(args, store, *, repository, versions, now, stdout, stderr) -> 
         "collection_id": manifest.collection_id,
         "collection_fingerprint": manifest.collection_fingerprint,
         "collector_git_commit": manifest.collector_git_commit,
+        "server_main_git_commit": manifest.server_main_git_commit,
         "m2_preregistration_git_commit": manifest.m2_preregistration_git_commit,
+        "future_validation_fingerprint": manifest.future_validation_fingerprint,
+        "dependency_fingerprint": manifest.dependency_environment.fingerprint,
     }), file=stdout)
     return EXIT_OK
 
@@ -157,10 +172,13 @@ def format_symbol_run(entry) -> str:
     return format_line(fields)
 
 
-def _run_collect(store, *, provider_factory, now, run_id_factory, repository, stdout) -> int:
+def _run_collect(store, *, provider_factory, now, run_id_factory, repository,
+                 dependency_environment, stdout) -> int:
     kwargs: dict[str, object] = {}
     if repository is not None:
         kwargs["repository"] = repository
+    if dependency_environment is not None:
+        kwargs["dependency_environment"] = dependency_environment
     if provider_factory is not None:
         kwargs["provider_factory"] = provider_factory
     if now is not None:
@@ -210,6 +228,8 @@ def format_health(report: HealthReport) -> list[str]:
         "activated_at": _time(report.activated_at),
         "collector_git_commit": report.collector_git_commit or "none",
         "m2_preregistration_git_commit": report.m2_preregistration_git_commit or "none",
+        "m2_binding": report.m2_binding,
+        "dependency_environment": report.dependency_environment,
         "universe": ",".join(report.universe),
         "interval": report.interval,
         "basis": report.basis,
@@ -240,6 +260,7 @@ def format_health(report: HealthReport) -> list[str]:
             "runs_config_mismatch": report.runs_config_mismatch,
             "runs_refused_collector": report.runs_refused_collector,
             "runs_refused_provenance": report.runs_refused_provenance,
+            "runs_refused_dependencies": report.runs_refused_dependencies,
             "runs_interrupted": report.runs_interrupted,
             "last_run": _time(report.last_run),
             "last_success": _time(report.last_success),
@@ -265,13 +286,19 @@ def health_exit_code(report: HealthReport) -> int:
         return EXIT_REFUSED
     if report.status == "not_activated":
         return EXIT_OK
-    if report.status == "active" and report.provenance.status == "ok":
+    if report.status == "active" and report.provenance.status == "ok" \
+            and report.m2_binding == "ok" and report.dependency_environment == "ok":
         return EXIT_OK
     return EXIT_FAILED
 
 
-def _run_health(store, *, stdout) -> int:
-    report = health(store)
+def _run_health(store, *, repository, dependency_environment, stdout) -> int:
+    kwargs: dict[str, object] = {}
+    if repository is not None:
+        kwargs["repository"] = repository
+    if dependency_environment is not None:
+        kwargs["dependency_environment"] = dependency_environment
+    report = health(store, **kwargs)
     for line in format_health(report):
         print(line, file=stdout)
     return health_exit_code(report)
@@ -287,7 +314,7 @@ def main(
     provider_factory=None,
     now: Clock | None = None,
     repository=None,
-    versions: Mapping[str, str] | None = None,
+    dependency_environment=None,
     run_id_factory=None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -303,13 +330,15 @@ def main(
 
     store = build_prospective_store(root)
     if args.command == "activate":
-        return _run_activate(args, store, repository=repository, versions=versions, now=now,
+        return _run_activate(args, store, repository=repository,
+                             dependency_environment=dependency_environment, now=now,
                              stdout=stdout, stderr=stderr)
     if args.command == "collect":
         return _run_collect(store, provider_factory=provider_factory, now=now,
                             run_id_factory=run_id_factory, repository=repository,
-                            stdout=stdout)
-    return _run_health(store, stdout=stdout)
+                            dependency_environment=dependency_environment, stdout=stdout)
+    return _run_health(store, repository=repository,
+                       dependency_environment=dependency_environment, stdout=stdout)
 
 
 __all__ = ["main", "build_parser", "format_symbol_run", "format_health", "provenance_fields",

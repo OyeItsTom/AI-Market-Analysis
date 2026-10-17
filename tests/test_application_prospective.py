@@ -29,13 +29,14 @@ from src.data.provider import ProviderUnavailableError
 from src.data.series import PriceBasis
 from src.data.models import Interval
 from src.outcomes import LedgerPartition
-from src.prospective import COLLECTION_V1, CollectionStatus, RunStatus
+from src.prospective import (COLLECTION_V1, M2A_FUTURE_VALIDATION_FINGERPRINT, CollectionStatus,
+                             RunStatus)
 from tests.prospective_fixtures import (  # noqa: F401 - autouse guard
     COLLECTOR_SHA,
+    DEPENDENCIES,
     M2_SHA,
     SPY_ONLY,
     UTC,
-    VERSIONS,
     Clock,
     ProbeDouble,
     build_matured_root,
@@ -53,8 +54,8 @@ MONDAY_BAR = ny_midnight(date(2026, 10, 5))
 
 def activated(tmp_path, *, at=ACTIVATED_AT, definition=COLLECTION_V1):
     store = build_prospective_store(tmp_path / "v1")
-    activate(store, collector_git_commit=COLLECTOR_SHA, m2_preregistration_git_commit=M2_SHA,
-             repository=ProbeDouble(), versions=VERSIONS, now=lambda: at, definition=definition)
+    activate(store, collector_git_commit=COLLECTOR_SHA, server_main_git_commit=COLLECTOR_SHA,
+             repository=ProbeDouble(), now=lambda: at, definition=definition)
     return store
 
 
@@ -114,7 +115,9 @@ class TestActivation:
             "momentum_in_trend_context": "6589cb8021b76574",
             "trend_crossover": "f1126ca778e6f7ce",
         }
-        assert manifest.dependency_versions == VERSIONS
+        assert manifest.dependency_environment == DEPENDENCIES
+        assert manifest.server_main_git_commit == manifest.origin_main_git_commit == COLLECTOR_SHA
+        assert manifest.future_validation_fingerprint == M2A_FUTURE_VALIDATION_FINGERPRINT
 
     def test_activate_takes_no_provider_at_all(self):
         import inspect
@@ -131,8 +134,8 @@ class TestActivation:
         assert files(store.root) == before
 
     @pytest.mark.parametrize("kwargs, reason", [
-        ({"m2_preregistration_git_commit": ""}, "invalid_commit"),
-        ({"m2_preregistration_git_commit": "B" * 40}, "invalid_commit"),
+        ({"server_main_git_commit": ""}, "invalid_commit"),
+        ({"server_main_git_commit": "B" * 40}, "invalid_commit"),
         ({"collector_git_commit": "abc123"}, "invalid_commit"),
         ({"collector_git_commit": "c" * 40}, "collector_commit_mismatch"),
         ({"repository": ProbeDouble(clean=False)}, "dirty_repository"),
@@ -140,8 +143,8 @@ class TestActivation:
         ({"definition": replace(COLLECTION_V1, warmup_bars=50)}, "config_mismatch"),
     ])
     def test_refusals_write_nothing(self, tmp_path, kwargs, reason):
-        arguments = dict(collector_git_commit=COLLECTOR_SHA, m2_preregistration_git_commit=M2_SHA,
-                         repository=ProbeDouble(), versions=VERSIONS, now=lambda: ACTIVATED_AT)
+        arguments = dict(collector_git_commit=COLLECTOR_SHA, server_main_git_commit=COLLECTOR_SHA,
+                         repository=ProbeDouble(), now=lambda: ACTIVATED_AT)
         arguments.update(kwargs)
         store = build_prospective_store(tmp_path / "v1")
         with pytest.raises(ActivationRefused) as caught:

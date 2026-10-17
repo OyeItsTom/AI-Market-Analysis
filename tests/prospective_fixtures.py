@@ -2,9 +2,14 @@
 
 A session-shaped provider (weekday bars stamped 00:00 America/New_York,
 settled by the provider's own rule, with distinctive sentinel prices), a
-settable clock, a repository probe double, and a guard that fails any test
+settable clock, a repository probe double that satisfies the pinned M2A
+binding, a synthetic dependency environment, and a guard that fails any test
 that reaches the network, the real yfinance download or the live
-``data/prospective/v1`` root.
+``data/prospective/v1`` root. The guard also replaces the *default*
+repository probe and dependency source with those doubles, so no test
+depends on the checkout it runs in or the interpreter's installed packages;
+tests of the real Git probe and dependency capture use temporary repositories
+and synthetic distributions explicitly.
 """
 
 from __future__ import annotations
@@ -17,8 +22,18 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.application.prospective import (
+    current_dependency_environment as REAL_DEPENDENCY_ENVIRONMENT,
+    default_repository_probe as REAL_DEFAULT_REPOSITORY_PROBE,
+)
 from src.data.models import Interval, MarketBar
-from src.prospective import COLLECTION_V1, RepositoryState
+from src.prospective import (
+    COLLECTION_V1,
+    M2A_BOUND_PATHS,
+    M2A_PREREGISTRATION_COMMIT,
+    DependencyEnvironment,
+    RepositoryState,
+)
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
@@ -26,7 +41,14 @@ REPO = Path(__file__).resolve().parent.parent
 LIVE_ROOT = REPO / "data" / "prospective" / "v1"
 
 COLLECTOR_SHA = "a" * 40
-M2_SHA = "b" * 40
+M2_SHA = M2A_PREREGISTRATION_COMMIT
+PINNED_HASHES = {bound.path: bound.sha256 for bound in M2A_BOUND_PATHS}
+
+#: A synthetic activation-time dependency environment (never the host's).
+DEPENDENCIES = DependencyEnvironment(
+    "CPython", "3.11.3",
+    (("numpy", "2.3.4"), ("pandas", "3.0.5"), ("pip", "25.2"), ("yfinance", "1.7.0")),
+)
 
 #: Prices start here so any leaked price is recognisable in output.
 SENTINEL_BASE = 7777.123456
@@ -104,21 +126,68 @@ class SessionProvider:
 
 
 class ProbeDouble:
-    """A repository probe answering from fixed values."""
+    """A repository probe answering from fixed values; by default every check passes.
 
-    def __init__(self, *, head=COLLECTOR_SHA, clean=True, ancestors=(M2_SHA, COLLECTOR_SHA)):
+    ``origin_main`` defaults to ``head``. ``committed`` / ``working`` map a
+    bound path to its SHA-256 at the M2A commit / in the working tree
+    (default: the pinned hashes); ``unchanged`` is the commit-vs-HEAD diff
+    answer. ``fail`` makes every call raise :class:`RepositoryProbeError`.
+    """
+
+    _DEFAULT = object()
+
+    def __init__(self, *, head=COLLECTOR_SHA, clean=True, ancestors=(M2_SHA, COLLECTOR_SHA),
+                 branch="main", origin_main=_DEFAULT, commits=(M2_SHA, COLLECTOR_SHA),
+                 committed=None, working=None, unchanged=True, fail=False):
         self.head = head
         self.clean = clean
         self.ancestors = set(ancestors)
+        self.branch = branch
+        self.origin = head if origin_main is ProbeDouble._DEFAULT else origin_main
+        self.commits = set(commits)
+        self.committed = dict(PINNED_HASHES if committed is None else committed)
+        self.working = dict(PINNED_HASHES if working is None else working)
+        self.unchanged = unchanged
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def _call(self, name):
+        self.calls.append(name)
+        if self.fail:
+            from src.prospective import RepositoryProbeError
+            raise RepositoryProbeError(f"{name} failed")
 
     def repository_state(self) -> RepositoryState:
+        self._call("repository_state")
         return RepositoryState(head=self.head, clean=self.clean)
 
     def is_ancestor_of_head(self, commit: str) -> bool:
+        self._call("is_ancestor_of_head")
         return commit in self.ancestors
 
+    def current_branch(self):
+        self._call("current_branch")
+        return self.branch
 
-VERSIONS = {"python": "3.11.3", "yfinance": "1.7.0", "pandas": "3.0.5"}
+    def origin_main(self):
+        self._call("origin_main")
+        return self.origin
+
+    def commit_exists(self, commit: str) -> bool:
+        self._call("commit_exists")
+        return commit in self.commits
+
+    def blob_sha256(self, commit: str, path: str):
+        self._call("blob_sha256")
+        return self.committed.get(path) if commit in self.commits else None
+
+    def working_file_sha256(self, path: str):
+        self._call("working_file_sha256")
+        return self.working.get(path)
+
+    def paths_unchanged_since(self, commit: str, paths) -> bool:
+        self._call("paths_unchanged_since")
+        return self.unchanged
 
 #: A one-symbol variant for multi-week simulations; same rules, smaller universe.
 SPY_ONLY = replace(COLLECTION_V1, universe=("SPY",))
@@ -140,8 +209,8 @@ def build_matured_root(base: Path, sessions: int) -> Path:
     from src.application.prospective import activate, build_prospective_store, collect
 
     store = build_prospective_store(base / "v1")
-    activate(store, collector_git_commit=COLLECTOR_SHA, m2_preregistration_git_commit=M2_SHA,
-             repository=ProbeDouble(), versions=VERSIONS, now=lambda: et(2026, 10, 5, 15),
+    activate(store, collector_git_commit=COLLECTOR_SHA, server_main_git_commit=COLLECTOR_SHA,
+             repository=ProbeDouble(), now=lambda: et(2026, 10, 5, 15),
              definition=SPY_ONLY)
     provider = SessionProvider()
     for number, moment in enumerate(weekday_mornings(date(2026, 10, 6), sessions)):
@@ -153,7 +222,8 @@ def build_matured_root(base: Path, sessions: int) -> Path:
 
 
 def install_offline_guard(monkeypatch) -> None:
-    """No socket, no real yfinance download, no default provider."""
+    """No socket, no real yfinance download, no default provider; default probe and
+    dependency source are the passing doubles (never the checkout or the host)."""
 
     def refuse_connect(self, *args, **kwargs):
         raise AssertionError("network access attempted in an offline test")
@@ -167,6 +237,11 @@ def install_offline_guard(monkeypatch) -> None:
     monkeypatch.setattr(socket.socket, "connect", refuse_connect)
     monkeypatch.setattr("src.data.providers.yahoo._default_download", refuse_download)
     monkeypatch.setattr("src.application.prospective.default_provider", refuse_provider)
+    for module in ("src.application.prospective", "src.application.future_validation",
+                   "src.cli.prospective", "src.cli.future_validation"):
+        monkeypatch.setattr(f"{module}.default_repository_probe", ProbeDouble)
+    monkeypatch.setattr("src.application.prospective.current_dependency_environment",
+                        lambda: DEPENDENCIES)
 
 
 @pytest.fixture(autouse=True)

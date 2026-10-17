@@ -21,8 +21,19 @@ from enum import Enum
 from typing import Any, Mapping
 
 from .definition import DefinitionError, require_aware, validate_commit_sha
+from .identity import (
+    AUTHORITATIVE_BRANCH,
+    M2A_BOUND_PATHS,
+    M2A_FUTURE_VALIDATION_FINGERPRINT,
+    M2A_PREREGISTRATION_COMMIT,
+    BoundPath,
+    DependencyEnvironment,
+    IdentityError,
+    bound_paths_from_payload,
+    validate_sha256,
+)
 
-MANIFEST_SCHEMA = "prospective_activation_v1"
+MANIFEST_SCHEMA = "prospective_activation_v2"
 RUN_SCHEMA = "prospective_run_v1"
 RUN_START_SCHEMA = "prospective_run_start_v1"
 
@@ -101,6 +112,10 @@ class RunStatus(str, Enum):
     DIRTY_COLLECTOR_TREE = "dirty_collector_tree"
     #: The repository could not be inspected, so the collector is unverified.
     COLLECTOR_UNVERIFIED = "collector_unverified"
+    #: The installed dependency environment differs from the one activation recorded.
+    DEPENDENCY_ENVIRONMENT_MISMATCH = "dependency_environment_mismatch"
+    #: The installed dependency environment could not be read canonically.
+    DEPENDENCY_ENVIRONMENT_UNVERIFIED = "dependency_environment_unverified"
     #: The existing ledger failed provenance reconciliation.
     PROVENANCE_INVALID = "provenance_invalid"
     #: The existing ledger could not be read strictly, so provenance is unknown.
@@ -151,6 +166,12 @@ def _int(value: object, label: str) -> int:
     return value
 
 
+def _bool(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise RecordError(f"{label} must be a boolean")
+    return value
+
+
 def _optional_int(value: object, label: str) -> int | None:
     return None if value is None else _int(value, label)
 
@@ -180,13 +201,29 @@ def _str_tuple(value: object, label: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class ActivationManifest:
-    """The write-once record of the explicitly approved activation."""
+    """The write-once record of the explicitly approved activation (schema v2).
+
+    Besides the collection identity it records the proof activation checked:
+    the collector commit was checked out on ``main`` with a clean tree and was
+    equal to the fetched ``origin/main`` and to the operator's freshly
+    verified server ``main``; the pinned M2A pre-registration commit was in its
+    history with its bound scientific files unchanged; and the dependency
+    environment it ran in. Decoding is strict: exact keys, canonical bytes,
+    full SHAs and SHA-256s, the pinned M2A identity, and a recorded proof that
+    is internally consistent -- a manifest that does not record a passing
+    activation is corruption, never something to coerce.
+    """
 
     activated_at: datetime
     collection_id: str
     collection_fingerprint: str
+    provenance_policy_fingerprint: str
     collector_git_commit: str
+    origin_main_git_commit: str
+    server_main_git_commit: str
     m2_preregistration_git_commit: str
+    future_validation_fingerprint: str
+    m2_bound_paths: tuple[BoundPath, ...]
     holdout_start: date
     universe: tuple[str, ...]
     interval: str
@@ -195,28 +232,52 @@ class ActivationManifest:
     hypothesis_fingerprints: Mapping[str, str]
     outcome_spec_fingerprints: tuple[str, ...]
     evaluation_version: int
-    dependency_versions: Mapping[str, str]
+    dependency_environment: DependencyEnvironment
+    git_branch: str = AUTHORITATIVE_BRANCH
+    git_tree_clean: bool = True
+    m2_preregistration_in_history: bool = True
 
     FIELDS = frozenset({
         "schema", "activated_at", "collection_id", "collection_fingerprint",
-        "collector_git_commit", "m2_preregistration_git_commit", "holdout_start",
-        "universe", "interval", "basis", "provider", "hypothesis_fingerprints",
-        "outcome_spec_fingerprints", "evaluation_version", "dependency_versions",
+        "provenance_policy_fingerprint", "collector_git_commit", "origin_main_git_commit",
+        "server_main_git_commit", "git_branch", "git_tree_clean",
+        "m2_preregistration_git_commit", "m2_preregistration_in_history",
+        "future_validation_fingerprint", "m2_bound_paths", "holdout_start", "universe",
+        "interval", "basis", "provider", "hypothesis_fingerprints", "outcome_spec_fingerprints",
+        "evaluation_version", "dependency_environment",
     })
 
     def __post_init__(self) -> None:
         try:
             require_aware(self.activated_at, "activated_at")
-            validate_commit_sha(self.collector_git_commit, "collector_git_commit")
-            validate_commit_sha(self.m2_preregistration_git_commit,
-                                "m2_preregistration_git_commit")
-        except DefinitionError as exc:
+            for name in ("collector_git_commit", "origin_main_git_commit",
+                         "server_main_git_commit", "m2_preregistration_git_commit"):
+                validate_commit_sha(getattr(self, name), name)
+            for name in ("collection_fingerprint", "provenance_policy_fingerprint",
+                         "future_validation_fingerprint"):
+                validate_sha256(getattr(self, name), name)
+        except (DefinitionError, IdentityError) as exc:
             raise RecordError(str(exc)) from exc
+        if not isinstance(self.dependency_environment, DependencyEnvironment):
+            raise RecordError("dependency_environment must be a DependencyEnvironment")
+        # The recorded proof: only a passing activation writes a manifest.
+        if self.git_branch != AUTHORITATIVE_BRANCH or self.git_tree_clean is not True \
+                or self.m2_preregistration_in_history is not True:
+            raise RecordError("the manifest does not record a clean activation on main")
+        if not (self.collector_git_commit == self.origin_main_git_commit
+                == self.server_main_git_commit):
+            raise RecordError("the collector commit, origin/main and server main must be equal")
+        if self.m2_preregistration_git_commit != M2A_PREREGISTRATION_COMMIT:
+            raise RecordError("the manifest names an unexpected M2 pre-registration commit")
+        if self.future_validation_fingerprint != M2A_FUTURE_VALIDATION_FINGERPRINT:
+            raise RecordError("the manifest names an unexpected future-validation fingerprint")
+        if tuple(self.m2_bound_paths) != M2A_BOUND_PATHS:
+            raise RecordError("the manifest's M2 bound paths are not the pre-registered ones")
+        object.__setattr__(self, "m2_bound_paths", tuple(self.m2_bound_paths))
         object.__setattr__(self, "universe", tuple(self.universe))
         object.__setattr__(self, "outcome_spec_fingerprints",
                            tuple(self.outcome_spec_fingerprints))
         object.__setattr__(self, "hypothesis_fingerprints", dict(self.hypothesis_fingerprints))
-        object.__setattr__(self, "dependency_versions", dict(self.dependency_versions))
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -224,8 +285,16 @@ class ActivationManifest:
             "activated_at": encode_time(self.activated_at),
             "collection_id": self.collection_id,
             "collection_fingerprint": self.collection_fingerprint,
+            "provenance_policy_fingerprint": self.provenance_policy_fingerprint,
             "collector_git_commit": self.collector_git_commit,
+            "origin_main_git_commit": self.origin_main_git_commit,
+            "server_main_git_commit": self.server_main_git_commit,
+            "git_branch": self.git_branch,
+            "git_tree_clean": self.git_tree_clean,
             "m2_preregistration_git_commit": self.m2_preregistration_git_commit,
+            "m2_preregistration_in_history": self.m2_preregistration_in_history,
+            "future_validation_fingerprint": self.future_validation_fingerprint,
+            "m2_bound_paths": [bound.to_payload() for bound in self.m2_bound_paths],
             "holdout_start": self.holdout_start.isoformat(),
             "universe": list(self.universe),
             "interval": self.interval,
@@ -234,7 +303,7 @@ class ActivationManifest:
             "hypothesis_fingerprints": dict(self.hypothesis_fingerprints),
             "outcome_spec_fingerprints": list(self.outcome_spec_fingerprints),
             "evaluation_version": self.evaluation_version,
-            "dependency_versions": dict(self.dependency_versions),
+            "dependency_environment": self.dependency_environment.to_payload(),
         }
 
     def to_bytes(self) -> bytes:
@@ -246,21 +315,39 @@ class ActivationManifest:
             payload = json.loads(raw.decode("ascii"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RecordError("activation manifest is not ASCII JSON") from exc
+        if isinstance(payload, dict) and payload.get("schema") != MANIFEST_SCHEMA:
+            raise RecordError(f"unknown activation manifest schema {payload.get('schema')!r}")
         payload = _require_keys(payload, cls.FIELDS, "activation manifest")
-        if payload["schema"] != MANIFEST_SCHEMA:
-            raise RecordError(f"unknown activation manifest schema {payload['schema']!r}")
         try:
             holdout = date.fromisoformat(_str(payload["holdout_start"], "holdout_start"))
         except ValueError as exc:
             raise RecordError("holdout_start is not an ISO date") from exc
+        try:
+            bound = bound_paths_from_payload(payload["m2_bound_paths"])
+            environment = DependencyEnvironment.from_payload(payload["dependency_environment"])
+        except IdentityError as exc:
+            raise RecordError(str(exc)) from exc
         manifest = cls(
             activated_at=decode_time(payload["activated_at"], "activated_at"),
             collection_id=_str(payload["collection_id"], "collection_id"),
             collection_fingerprint=_str(payload["collection_fingerprint"],
                                         "collection_fingerprint"),
+            provenance_policy_fingerprint=_str(payload["provenance_policy_fingerprint"],
+                                               "provenance_policy_fingerprint"),
             collector_git_commit=_str(payload["collector_git_commit"], "collector_git_commit"),
+            origin_main_git_commit=_str(payload["origin_main_git_commit"],
+                                        "origin_main_git_commit"),
+            server_main_git_commit=_str(payload["server_main_git_commit"],
+                                        "server_main_git_commit"),
+            git_branch=_str(payload["git_branch"], "git_branch"),
+            git_tree_clean=_bool(payload["git_tree_clean"], "git_tree_clean"),
             m2_preregistration_git_commit=_str(payload["m2_preregistration_git_commit"],
                                                "m2_preregistration_git_commit"),
+            m2_preregistration_in_history=_bool(payload["m2_preregistration_in_history"],
+                                                "m2_preregistration_in_history"),
+            future_validation_fingerprint=_str(payload["future_validation_fingerprint"],
+                                               "future_validation_fingerprint"),
+            m2_bound_paths=bound,
             holdout_start=holdout,
             universe=_str_tuple(payload["universe"], "universe"),
             interval=_str(payload["interval"], "interval"),
@@ -271,7 +358,7 @@ class ActivationManifest:
             outcome_spec_fingerprints=_str_tuple(payload["outcome_spec_fingerprints"],
                                                  "outcome_spec_fingerprints"),
             evaluation_version=_int(payload["evaluation_version"], "evaluation_version"),
-            dependency_versions=_str_map(payload["dependency_versions"], "dependency_versions"),
+            dependency_environment=environment,
         )
         if manifest.to_bytes() != raw:
             raise RecordError("activation manifest bytes are not canonical")
