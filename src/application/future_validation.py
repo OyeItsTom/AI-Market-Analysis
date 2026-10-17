@@ -1,9 +1,12 @@
 """FUTURE_VALIDATION_V1 runner: blind status, one explicit run, write-once unlock and result.
 
-    status -> manifest -> shared lock (non-blocking) -> capture the evidence bytes -> unlock
+    status -> manifest (read once) -> M2A binding (activation manifest v2 + live repository)
+              -> shared lock (non-blocking) -> capture the evidence bytes -> unlock
               the lock -> Level-1 projection of a private copy -> identities, provenance,
               evidence clock, stop rule.  Never a state, a reason code, a price or a return.
-    run    -> definition identity -> result already written? (re-derive it from its
+    run    -> definition identity -> manifest (read once; absent/unreadable refuses)
+              -> M2A binding of that manifest
+              -> result already written? (re-derive it from its
               unlock's recorded prefixes, require identical bytes, then finish the report)
               -> unlock already written? (complete THAT unlock from its recorded prefixes)
               -- an existing unlock is first rebuilt from those prefixes and must match in
@@ -26,6 +29,25 @@ Nothing is analysed from the live files: the lock is released as soon as the
 bytes are in memory, and everything afterwards reads a private temporary copy
 of exactly those bytes, so collection may continue while the validation
 computes without being able to change it.
+
+Binding (M2B). Before anything is captured, re-derived or opened, the
+activation manifest (schema v2, decoded strictly, so it names the pinned M2A
+commit, fingerprint and bound-path hashes) must name the live
+``FUTURE_VALIDATION_V1`` fingerprint, and the local repository must be clean
+with the pinned M2A commit in HEAD's history and the bound scientific files
+byte-identical to it (:func:`~src.application.prospective.m2_binding_mismatches`).
+HEAD itself need not be the activation HEAD -- later operational hardening is
+legitimate -- and no network is used: the authoritative ``main`` was proven
+once, at activation, and is recorded in the manifest.
+
+One manifest per operation. The manifest is read and decoded exactly once per
+``status`` or ``run`` and its binding checked; every later stage uses the
+captured snapshot, so after each capture or recapture the snapshot's
+``activation.json`` must be byte-identical to the bound manifest
+(``manifest_changed`` otherwise) and the repository binding is checked again
+(:func:`_same_bound_manifest`) -- before any gate, result verification, unlock
+recovery or Level-3 read. A manifest that is absent, unreadable or changed at
+any point refuses; no stage re-reads it opportunistically.
 
 Time. E1 and F run on the evidence clock
 (:func:`~src.research.future_validation_engine.evidence_through`), never on the
@@ -66,12 +88,16 @@ from src.future_validation import (
 from src.outcomes import LedgerCorruption, LedgerPartition
 from src.prospective import (
     COLLECTION_V1,
+    M2A_BOUND_PATHS,
+    M2A_PREREGISTRATION_COMMIT,
     ActivationManifest,
     CollectionDefinition,
     LockMissingError,
     ManifestCorruption,
+    NotActivatedError,
     ProspectiveStore,
     ProvenanceReport,
+    RepositoryProbeError,
     RootLockedError,
     RunLogCorruption,
     RunRecord,
@@ -106,8 +132,10 @@ from src.research.future_validation_engine import (
 from .outcomes import build_outcome_ledger
 from .prospective import (
     build_prospective_store,
+    default_repository_probe,
     evaluate_provenance,
     live_configuration_mismatches,
+    m2_binding_mismatches,
     manifest_mismatches,
 )
 from .snapshot import BASIS
@@ -156,6 +184,73 @@ def definition_mismatches(
             collection.interval, collection.basis, collection.evaluation_version):
         found.append("market_context")
     return tuple(found)
+
+
+def binding_mismatches(manifest: ActivationManifest, repository) -> tuple[str, ...]:
+    """Every way the activation or the live repository breaks the M2A binding; ``()`` if none.
+
+    Operational identity only: it reads the manifest's identities and asks Git
+    local, read-only questions. It never reads evidence.
+    """
+    found: list[str] = []
+    if manifest.future_validation_fingerprint != FUTURE_VALIDATION_V1.fingerprint:
+        found.append("manifest_future_validation_fingerprint")
+    if manifest.m2_preregistration_git_commit != M2A_PREREGISTRATION_COMMIT:
+        found.append("manifest_m2_preregistration_git_commit")
+    if tuple(manifest.m2_bound_paths) != M2A_BOUND_PATHS:
+        found.append("manifest_m2_bound_paths")
+    try:
+        if not repository.repository_state().clean:
+            found.append("dirty_repository")
+        found.extend(m2_binding_mismatches(repository))
+    except RepositoryProbeError:
+        found.append("repository_unverified")
+    return tuple(found)
+
+
+def _repository(repository):
+    return default_repository_probe() if repository is None else repository
+
+
+#: The activation manifest's name inside a captured snapshot.
+_MANIFEST_FILE = "activation.json"
+
+
+def _bound_manifest(store: ProspectiveStore, repository
+                    ) -> tuple[ActivationManifest | None, tuple[str, ...]]:
+    """Read the activation manifest once and bind it: ``(manifest, ())`` or ``(None, why)``."""
+    try:
+        manifest = store.read_manifest()
+    except ManifestCorruption:
+        return None, ("invalid_manifest",)
+    if manifest is None:
+        return None, ("not_activated",)
+    binding = binding_mismatches(manifest, repository)
+    if binding:
+        return None, ("m2_binding_mismatch", *binding)
+    return manifest, ()
+
+
+def _same_bound_manifest(snapshot: InputSnapshot, manifest: ActivationManifest,
+                         repository) -> tuple[str, ...]:
+    """After a capture: the snapshot holds exactly the bound manifest and it still binds.
+
+    ``()`` when the snapshot's ``activation.json`` is byte-identical to the
+    manifest bound at the start of the operation (decoding is canonical, so equal
+    bytes are the same manifest) and the repository binding of that manifest
+    still holds; otherwise the refusal detail.
+    """
+    if snapshot.data(_MANIFEST_FILE) != manifest.to_bytes():
+        return ("manifest_changed",)
+    binding = binding_mismatches(manifest, repository)
+    return ("m2_binding_mismatch", *binding) if binding else ()
+
+
+def _binding_label(detail: tuple[str, ...]) -> str:
+    """The status ``m2_binding`` word for a refusal detail."""
+    if detail[0] == "m2_binding_mismatch" and detail[1:] != ("repository_unverified",):
+        return "mismatch"
+    return "unavailable"
 
 
 # -- Level-1 and Level-3 projections ----------------------------------------------------------
@@ -290,6 +385,8 @@ class _Frozen:
         except ManifestCorruption:
             return Gate(integrity="manifest_corrupt", identity_mismatches=tuple(identity))
         identity += [f"manifest_{name}" for name in manifest_mismatches(manifest, self.collection)]
+        if manifest.future_validation_fingerprint != FUTURE_VALIDATION_V1.fingerprint:
+            identity.append("manifest_future_validation_fingerprint")
         identity += [f"live_{name}" for name in live_configuration_mismatches(self.collection)]
         try:
             run_log = self.store.read_run_log()
@@ -348,6 +445,7 @@ class StatusReport:
     excluded_artifact_keys: int = 0
     excluded_outcome_keys: int = 0
     validity: str = VALIDITY_UNKNOWN
+    m2_binding: str = "unavailable"
     activated_at: datetime | None = None
     evidence_through: datetime | None = None
     e1_due: datetime | None = None
@@ -393,8 +491,13 @@ def status(
     definition: FutureValidationDefinition = FUTURE_VALIDATION_V1,
     pinned_fingerprint: str = FUTURE_VALIDATION_V1_FINGERPRINT,
     collection: CollectionDefinition = COLLECTION_V1,
+    repository=None,
 ) -> StatusReport:
-    """Level 1 only, offline, read-only, clock-free. Never creates anything."""
+    """Level 1 only, offline, read-only, clock-free. Never creates anything.
+
+    A broken M2A binding is reported (``m2_binding=mismatch``, the reasons as
+    identity mismatches, validity ``invalid``) before anything is captured.
+    """
     store = build_prospective_store() if store is None else store
     artifacts = ValidationArtifacts(store.root, definition.validation_id, definition.fingerprint)
     base = dict(
@@ -412,15 +515,32 @@ def status(
                             validity=VALIDITY_INVALID, **base)
     if manifest is None:
         return StatusReport(activation="not_activated", **base)
+    probe = _repository(repository)
+    binding = binding_mismatches(manifest, probe)
+    if binding:
+        return StatusReport(activation="activated", identity_mismatches=binding,
+                            validity=VALIDITY_INVALID,
+                            m2_binding=_binding_label(("m2_binding_mismatch", *binding)),
+                            **base)
     try:
         snapshot = _capture_locked(store)
     except RootLockedError:
         return StatusReport(activation="collect_in_progress", **base)
     except LockMissingError:
         return StatusReport(activation="lock_missing", integrity="lock_missing", **base)
+    except NotActivatedError:  # the manifest vanished after it was bound
+        return StatusReport(activation="activated", identity_mismatches=("manifest_changed",),
+                            validity=VALIDITY_INVALID, **base)
     except UnsupportedEntry:
         return StatusReport(activation="activated", integrity="unsupported_entry",
                             validity=VALIDITY_INVALID, **base)
+    same = _same_bound_manifest(snapshot, manifest, probe)
+    if same:
+        return StatusReport(activation="activated",
+                            identity_mismatches=same[1:] if same[0] == "m2_binding_mismatch"
+                            else same,
+                            validity=VALIDITY_INVALID, m2_binding=_binding_label(same), **base)
+    base["m2_binding"] = "ok"
     with _opened(snapshot, collection) as frozen:
         gate = frozen.gate(definition, pinned_fingerprint)
     return _status_from(definition, dict(base, activation="activated"), gate)
@@ -590,12 +710,15 @@ def _write_result(artifacts: ValidationArtifacts, result: Mapping[str, Any],
                      unlock_sha256=sha256_hex(unlock_raw), result_sha256=sha256_hex(raw))
 
 
-def _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock: bytes
+def _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock: bytes,
+                 manifest: ActivationManifest, repository
                  ) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
     """Re-derive the result of an existing unlock from its recorded prefixes, or say why not.
 
     Used both to complete an interrupted opening and to verify a written result;
-    it never creates an unlock, a snapshot or a cutoff of its own.
+    it never creates an unlock, a snapshot or a cutoff of its own. ``manifest`` is
+    the one bound at the start of the run: the recaptured snapshot must hold
+    exactly it, and it must still bind, before anything is opened.
     """
     try:
         unlock = _decode_unlock(raw_unlock)
@@ -612,10 +735,15 @@ def _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock: 
         return None, ("collect_in_progress",)
     except LockMissingError:
         return None, ("lock_missing",)
+    except NotActivatedError:  # the manifest vanished after it was bound
+        return None, ("manifest_changed",)
     except (SnapshotMismatch, UnsupportedEntry):
         return None, ("snapshot_mismatch",)
     if snapshot.identity != unlock["snapshot"]["identity"]:
         return None, ("snapshot_mismatch",)
+    same = _same_bound_manifest(snapshot, manifest, repository)
+    if same:
+        return None, same
     with _opened(snapshot, collection) as frozen:
         gate = frozen.gate(definition, pinned_fingerprint)
         if gate.validity != VALIDITY_OK or not gate.unlockable:
@@ -631,7 +759,8 @@ def _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock: 
 
 
 def _finish_report(store, artifacts: ValidationArtifacts, definition, pinned_fingerprint,
-                   collection, raw_result: bytes) -> RunReport:
+                   collection, raw_result: bytes, manifest: ActivationManifest,
+                   repository) -> RunReport:
     """result.json exists: verify it, never replace it; write report.md from it if missing.
 
     The result must name the unlock on disk by its SHA-256 and be byte-identical to
@@ -647,7 +776,8 @@ def _finish_report(store, artifacts: ValidationArtifacts, definition, pinned_fin
         return RunReport("refused", detail=("unlock_missing",))
     if result.get("unlock", {}).get("sha256") != sha256_hex(raw_unlock):
         return RunReport("refused", detail=("result_unlock_mismatch",))
-    derived, why = _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock)
+    derived, why = _from_unlock(store, definition, pinned_fingerprint, collection, raw_unlock,
+                                manifest, repository)
     if derived is None:
         return RunReport("refused", detail=("result_unverifiable", *why))
     if canonical_bytes(derived) != raw_result:
@@ -678,6 +808,9 @@ def run(
     """The one explicit opening. Refuses (writing nothing) unless every gate passes.
 
     ``now`` is host metadata only (``host_recorded_at``); it decides nothing.
+    The M2A binding is checked before any existing unlock or result is
+    re-derived and before anything is captured; ``repository`` defaults to
+    this checkout's probe.
     """
     store = build_prospective_store() if store is None else store
     if definition_mismatches(definition, pinned_fingerprint, collection):
@@ -685,40 +818,43 @@ def run(
                                             *definition_mismatches(definition,
                                                                    pinned_fingerprint,
                                                                    collection)))
+    probe = _repository(repository)
+    manifest, why = _bound_manifest(store, probe)
+    if manifest is None:
+        return RunReport("refused", detail=why)
     artifacts = ValidationArtifacts(store.root, definition.validation_id, definition.fingerprint)
     raw_result = artifacts.read(RESULT_NAME)
     if raw_result is not None:
         return _finish_report(store, artifacts, definition, pinned_fingerprint, collection,
-                              raw_result)
+                              raw_result, manifest, probe)
     raw_unlock = artifacts.read(UNLOCK_NAME)
     if raw_unlock is not None:
         result, why = _from_unlock(store, definition, pinned_fingerprint, collection,
-                                   raw_unlock)
+                                   raw_unlock, manifest, probe)
         if result is None:
             return RunReport("refused", detail=why)
         return _write_result(artifacts, result, raw_unlock, "completed_after_unlock")
 
-    try:
-        manifest = store.read_manifest()
-    except ManifestCorruption:
-        return RunReport("refused", detail=("invalid_manifest",))
-    if manifest is None:
-        return RunReport("refused", detail=("not_activated",))
     try:
         snapshot = _capture_locked(store)
     except RootLockedError:
         return RunReport("refused", detail=("collect_in_progress",))
     except LockMissingError:
         return RunReport("refused", detail=("lock_missing",))
+    except NotActivatedError:  # the manifest vanished after it was bound
+        return RunReport("refused", detail=("manifest_changed",))
     except UnsupportedEntry:
         return RunReport("refused", detail=("unsupported_entry",))
+    same = _same_bound_manifest(snapshot, manifest, probe)
+    if same:
+        return RunReport("refused", detail=same)
 
     with _opened(snapshot, collection) as frozen:
         gate = frozen.gate(definition, pinned_fingerprint)
         current = _status_from(definition, dict(
             validation_id=definition.validation_id,
             validation_fingerprint=definition.fingerprint, definition_identity="ok",
-            activation="activated"), gate)
+            activation="activated", m2_binding="ok"), gate)
         if gate.validity != VALIDITY_OK:
             return RunReport("refused", status=current,
                              detail=(f"validity_{gate.validity}", gate.integrity,
@@ -740,6 +876,7 @@ __all__ = [
     "VALIDITY_INVALID",
     "VALIDITY_UNKNOWN",
     "definition_mismatches",
+    "binding_mismatches",
     "Gate",
     "StatusReport",
     "RunReport",

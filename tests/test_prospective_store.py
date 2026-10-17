@@ -22,13 +22,16 @@ from src.prospective import (
     RunLogCorruption,
     RunRecord,
     RunStatus,
+    M2A_BOUND_PATHS,
+    M2A_FUTURE_VALIDATION_FINGERPRINT,
     SymbolRun,
-    dependency_versions,
+    capture_dependency_environment,
+    provenance_policy_for,
 )
 from tests.prospective_fixtures import (  # noqa: F401 - autouse guard
     COLLECTOR_SHA,
+    DEPENDENCIES,
     M2_SHA,
-    VERSIONS,
     et,
     ny_midnight,
     offline_and_no_live_root,
@@ -40,8 +43,13 @@ def manifest(**overrides) -> ActivationManifest:
         activated_at=et(2026, 10, 5, 15),
         collection_id=COLLECTION_V1.collection_id,
         collection_fingerprint=COLLECTION_V1.fingerprint,
+        provenance_policy_fingerprint=provenance_policy_for(COLLECTION_V1).fingerprint,
         collector_git_commit=COLLECTOR_SHA,
+        origin_main_git_commit=COLLECTOR_SHA,
+        server_main_git_commit=COLLECTOR_SHA,
         m2_preregistration_git_commit=M2_SHA,
+        future_validation_fingerprint=M2A_FUTURE_VALIDATION_FINGERPRINT,
+        m2_bound_paths=M2A_BOUND_PATHS,
         holdout_start=COLLECTION_V1.holdout_start,
         universe=COLLECTION_V1.universe,
         interval="1d",
@@ -50,7 +58,7 @@ def manifest(**overrides) -> ActivationManifest:
         hypothesis_fingerprints=COLLECTION_V1.hypothesis_fingerprints,
         outcome_spec_fingerprints=COLLECTION_V1.outcome_spec_fingerprints,
         evaluation_version=1,
-        dependency_versions=VERSIONS,
+        dependency_environment=DEPENDENCIES,
     )
     values.update(overrides)
     return ActivationManifest(**values)
@@ -90,17 +98,20 @@ class TestManifest:
         payload = json.loads(manifest().to_bytes())
         assert set(payload) == {
             "schema", "activated_at", "collection_id", "collection_fingerprint",
-            "collector_git_commit", "m2_preregistration_git_commit", "holdout_start",
+            "provenance_policy_fingerprint", "collector_git_commit", "origin_main_git_commit",
+            "server_main_git_commit", "git_branch", "git_tree_clean",
+            "m2_preregistration_git_commit", "m2_preregistration_in_history",
+            "future_validation_fingerprint", "m2_bound_paths", "holdout_start",
             "universe", "interval", "basis", "provider", "hypothesis_fingerprints",
-            "outcome_spec_fingerprints", "evaluation_version", "dependency_versions",
+            "outcome_spec_fingerprints", "evaluation_version", "dependency_environment",
         }
-        assert payload["schema"] == "prospective_activation_v1"
+        assert payload["schema"] == "prospective_activation_v2"
         assert payload["activated_at"] == "2026-10-05T19:00:00+00:00"
 
     @pytest.mark.parametrize("mutate", [
         lambda p: p.update(extra="x"),
         lambda p: p.pop("m2_preregistration_git_commit"),
-        lambda p: p.update(schema="prospective_activation_v2"),
+        lambda p: p.update(schema="prospective_activation_v1"),
         lambda p: p.update(collector_git_commit="abc"),
     ])
     def test_a_non_contract_manifest_is_refused(self, mutate):
@@ -324,7 +335,10 @@ class TestRepositoryProbe:
         assert not probe.is_ancestor_of_head("c" * 40)
 
 
-def test_dependency_versions_name_python_yfinance_and_pandas():
-    versions = dependency_versions()
-    assert set(versions) == {"python", "yfinance", "pandas"}
-    assert all(isinstance(value, str) and value for value in versions.values())
+def test_the_running_dependency_environment_is_canonical_and_complete():
+    environment = capture_dependency_environment()
+    names = [name for name, _ in environment.packages]
+    assert {"yfinance", "pandas", "numpy", "pytest"} <= set(names)
+    assert names == sorted(set(names))
+    assert environment.python_implementation and environment.python_version
+    assert capture_dependency_environment() == environment

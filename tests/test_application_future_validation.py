@@ -609,7 +609,8 @@ class TestCrashAfterUnlock:
         crash_after_unlock(store, monkeypatch)
         manifest = store.root / "activation.json"
         manifest.write_bytes(manifest.read_bytes() + b" ")
-        assert call_run(store).detail == ("snapshot_mismatch",)
+        # M2B R1: the manifest is read once and refused before any recapture.
+        assert call_run(store).detail == ("invalid_manifest",)
 
     def test_a_corrupt_unlock_is_refused_never_replaced(self, root_templates, tmp_path,
                                                         monkeypatch):

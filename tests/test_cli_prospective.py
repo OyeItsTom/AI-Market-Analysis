@@ -13,7 +13,6 @@ from src.data.provider import ProviderUnavailableError
 from tests.prospective_fixtures import (  # noqa: F401 - autouse guard
     COLLECTOR_SHA,
     M2_SHA,
-    VERSIONS,
     Clock,
     ProbeDouble,
     SessionProvider,
@@ -24,19 +23,20 @@ from tests.prospective_fixtures import (  # noqa: F401 - autouse guard
 )
 
 ACTIVATE = ["activate", "--collector-git-commit", COLLECTOR_SHA,
-            "--m2-preregistration-git-commit", M2_SHA]
+            "--server-main-sha", COLLECTOR_SHA]
 
 #: Every key a health line may carry. Level 1 only.
 HEALTH_KEYS = {
     "prospective_status", "root_exists", "ledger_exists", "collection_id",
     "collection_fingerprint", "manifest_fingerprint_match", "live_configuration_match",
-    "activated_at", "collector_git_commit", "m2_preregistration_git_commit", "universe",
-    "interval", "basis",
+    "activated_at", "collector_git_commit", "m2_preregistration_git_commit", "m2_binding",
+    "dependency_environment", "universe", "interval", "basis",
     "symbol", "readable", "claims_total", "tails_registered", "claims_evaluable",
     "claims_insufficient", "outcomes_matured_h1", "outcomes_matured_h5", "outcomes_matured_h20",
     "pending", "missed_collections", "missed_dates", "last_tail",
     "runs_total", "runs_completed", "runs_outside_window", "runs_config_mismatch",
-    "runs_refused_collector", "runs_refused_provenance", "runs_interrupted", "last_run",
+    "runs_refused_collector", "runs_refused_provenance", "runs_refused_dependencies",
+    "runs_interrupted", "last_run",
     "last_success", "symbol_statuses",
     "provenance", "provenance_reasons", "provenance_component", "provenance_symbol",
     "provenance_line", "provenance_policy_fingerprint", "claims_checked", "outcomes_checked",
@@ -57,7 +57,7 @@ COLLECT_KEYS = {
 
 def cli(argv, root, *, provider=None, now=None, repository=None):
     out, err = io.StringIO(), io.StringIO()
-    kwargs = dict(root=root, stdout=out, stderr=err, versions=VERSIONS,
+    kwargs = dict(root=root, stdout=out, stderr=err,
                   repository=repository if repository is not None else ProbeDouble())
     if provider is not None:
         kwargs["provider_factory"] = lambda: provider
@@ -98,7 +98,7 @@ class TestParser:
         activate_options = {o for a in commands.choices["activate"]._actions
                             for o in a.option_strings}
         assert activate_options == {"-h", "--help", "--collector-git-commit",
-                                    "--m2-preregistration-git-commit"}
+                                    "--server-main-sha"}
 
     @pytest.mark.parametrize("argv", [
         ["collect", "--symbol", "SPY"], ["collect", "SPY"], ["collect", "--root", "/tmp/x"],
@@ -125,15 +125,25 @@ class TestActivate:
 
     @pytest.mark.parametrize("argv, repository, reason", [
         (["activate", "--collector-git-commit", COLLECTOR_SHA,
-          "--m2-preregistration-git-commit", "not-a-sha"], None, "invalid_commit"),
+          "--server-main-sha", "not-a-sha"], None, "invalid_commit"),
         (ACTIVATE, ProbeDouble(head="d" * 40), "collector_commit_mismatch"),
         (ACTIVATE, ProbeDouble(clean=False), "dirty_repository"),
-        (ACTIVATE, ProbeDouble(ancestors=()), "m2_commit_not_in_history"),
+        (["activate", "--collector-git-commit", COLLECTOR_SHA,
+          "--server-main-sha", "e" * 40], None, "server_main_mismatch"),
     ])
     def test_refusals(self, root, argv, repository, reason):
         code, lines, _ = cli(argv, root, now=et(2026, 10, 5, 15), repository=repository)
         assert code == EXIT_REFUSED
         assert parse(lines[0]) == {"activation": "refused", "reason": reason}
+        assert not root.exists()
+
+    def test_an_m2_binding_refusal_names_its_details(self, root):
+        code, lines, _ = cli(ACTIVATE, root, now=et(2026, 10, 5, 15),
+                             repository=ProbeDouble(ancestors=(COLLECTOR_SHA,)))
+        assert code == EXIT_REFUSED
+        assert parse(lines[0]) == {"activation": "refused",
+                                   "reason": "m2_commit_not_in_history",
+                                   "details": "m2_commit_not_in_history"}
         assert not root.exists()
 
 

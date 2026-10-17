@@ -41,14 +41,18 @@ follow-up.**
 implemented, NOT ACTIVATED.** No claim has been collected and no scheduler is
 installed. Provenance hardening (N2) is implemented: a write into the
 prospective ledger by any other tool is detected and stops collection.
-Activation remains blocked on a frozen M2 future-validation
-pre-registration, explicit human approval, a pinned collector clone and
-local scheduler setup. See
+M2B activation identity binding is implemented: activation requires a
+clean `main` equal to the fetched `origin/main` and an operator-verified
+server `main`, hard-pins the M2A pre-registration commit and its bound
+scientific files (manifest v2), and records the full dependency environment,
+whose drift makes every later collection refuse. Activation remains blocked
+on the remaining pre-activation hardening, explicit human approval, a pinned
+collector clone and local scheduler setup. See
 [docs/prospective_collection.md](docs/prospective_collection.md) and
 [ADR 0013](docs/adr/0013-prospective-collection-and-holdout.md).
 **M2A — FUTURE_VALIDATION_V1 (`python -m src.cli.future_validation status|run`):
-pre-registration and runner implemented, NOT bound to activation (M2B) and
-never run on real data.** Per-symbol (SPY, QQQ, IWM) `trend_alignment` BULLISH
+pre-registration and runner implemented, bound by M2B to activation manifest
+v2 (pre-registration commit 3dac810 pinned) and never run on real data.** Per-symbol (SPY, QQQ, IWM) `trend_alignment` BULLISH
 h20 vs the Phase R matched-unconditional benchmark; blind 48-month/750-claim
 stop rule (72-month forced unlock), measured on the collected-evidence clock,
 never the host clock; write-once, verified unlock and result. See
@@ -250,7 +254,8 @@ src/prospective/         M1 Prospective Collection v1 (implemented, NOT activate
 ├── definition.py        COLLECTION_V1 + fingerprint; ET window, timestamp and gap rules
 ├── records.py           activation manifest + run log records (Level 1 only)
 ├── store.py             data/prospective/v1: write-once manifest, run log, root lock
-└── environment.py       read-only git probe + dependency versions for activation
+├── identity.py          pinned M2A identity + dependency-environment contract (pure)
+└── environment.py       read-only local git probe + dependency-environment capture
 
 src/research/future_validation.py         M2 FUTURE_VALIDATION_V1 definition (pre-registration)
 src/research/future_validation_engine.py  pure stop rule, Phase R benchmark reuse, categories

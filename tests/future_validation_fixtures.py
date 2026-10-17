@@ -36,7 +36,6 @@ from tests.prospective_fixtures import (
     REPO,
     SPY_ONLY,
     UTC,
-    VERSIONS,
     Clock,
     ProbeDouble,
     SessionProvider,
@@ -221,8 +220,8 @@ SESSIONS = 24
 def _activate(store):
     from src.application.prospective import activate
 
-    activate(store, collector_git_commit=COLLECTOR_SHA, m2_preregistration_git_commit=M2_SHA,
-             repository=ProbeDouble(), versions=VERSIONS, now=lambda: ACTIVATED_AT,
+    activate(store, collector_git_commit=COLLECTOR_SHA, server_main_git_commit=COLLECTOR_SHA,
+             repository=ProbeDouble(), now=lambda: ACTIVATED_AT,
              definition=SPY_ONLY)
 
 

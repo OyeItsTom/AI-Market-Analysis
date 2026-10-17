@@ -78,6 +78,7 @@ def format_status(report: StatusReport) -> list[str]:
         "excluded_artifact_keys": report.excluded_artifact_keys,
         "excluded_outcome_keys": report.excluded_outcome_keys,
         "validity": report.validity,
+        "m2_binding": report.m2_binding,
     })]
     lines.append(format_line({
         "activated_at": _time(report.activated_at),
@@ -147,7 +148,7 @@ def main(
         if value is not None:
             kwargs[name] = value
     if args.command == "status":
-        report = status(store, **kwargs)
+        report = status(store, repository=repository, **kwargs)
         for line in format_status(report):
             print(line, file=stdout)
         return status_exit_code(report)
