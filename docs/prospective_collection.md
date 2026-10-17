@@ -97,7 +97,8 @@ confirmed, and the root may hold the lock and possibly a partial — or even
 complete — `activation.json` (a failure in the final fsync comes after the
 bytes were written, and `health` may then report `active`). Treat it as
 unconfirmed and follow "Failed or interrupted activation" under Failure
-recovery before any retry, collection or scheduler installation. Refused,
+recovery (it applies only while v1 has never been activated) before any
+retry, collection or scheduler installation. Refused,
 writing nothing — not even the root directory — when (checked in this order,
 the first failure is the `reason`): either SHA is not a full lower-case
 40-hex SHA (`invalid_commit`); git cannot answer (`repository_unverified`);
@@ -454,9 +455,30 @@ regenerated. Before activation:
   same fingerprint, and that the restored clone is non-shallow and contains
   the M2A commit. Never run `collect` or `activate` in a restored copy and
   never schedule it.
+- the restored copy is also **clean as Git sees it** (the "Clean
+  repository" rule under Activation identity binding). In the restored
+  copy, each of these must hold:
+  - `git -c core.fsmonitor=false status --short --untracked-files=normal`
+    prints nothing (nothing modified, staged or untracked);
+  - `git -c core.fsmonitor=false diff --cached --quiet` exits 0 (nothing
+    staged);
+  - `git -c core.fsmonitor=false ls-files -v | grep -v '^H '` prints
+    nothing: every tracked entry is tagged `H`, so no file carries an
+    `assume-unchanged` (lower-case tag) or `skip-worktree` (`S`) flag;
+  - `git branch --show-current` prints `main`, and `git rev-parse HEAD`
+    prints the expected commit — the commit the dedicated clone was
+    pinned to (after activation, the manifest's `collector_git_commit`).
 
-Immediately after activation, take a backup and repeat the restore test on
-the activated root: the restored copy's `health` must report
+  A restored copy that fails any of these is **not** a verified restore
+  and is not ready to resume Collection v1, even if `health` looks right.
+  Never clear an index flag (`git update-index --no-assume-unchanged` /
+  `--no-skip-worktree`), reset, stash or delete files to make it pass:
+  find out why the restore differs, repair the backup or the restore
+  procedure, and restore again.
+
+Immediately after activation, take a backup and repeat the restore test
+(including the Git checks above) on the activated root: the restored
+copy's `health` must report
 `prospective_status=active` with the same `activated_at` and
 `collector_git_commit`, and `activation.json`, `runs.jsonl` and the ledger
 files must have the same SHA-256 as the originals. Because every file is
@@ -500,8 +522,16 @@ on the operator and the backup.
 
 A lost root looks exactly like a never-activated one (`health` then says
 `prospective_status=not_activated` and exits 0), so watch for
-`prospective_status=active` after activation. If the root is missing,
-truncated or damaged:
+`prospective_status=active` after activation. Whether v1 was ever
+activated is decided by the record, not by what the root shows now:
+Collection v1 **was activated** if any `activate` run ever printed
+`activation=written`, if `health` ever reported `prospective_status=active`
+for v1, if an unconfirmed activation was ever accepted by a recorded
+decision, or if any `collect` ever ran or a scheduler was ever installed.
+In that case this section applies — never "Failed or interrupted
+activation" under Failure recovery, even if the root is now empty, missing,
+or holds only an empty `collect.lock`. If the root is missing, truncated or
+damaged:
 
 1. **Stop collection** (unload the LaunchAgent).
 2. **Restore from the verified backup** into the dedicated clone, then
@@ -621,9 +651,14 @@ lists what must survive — see Activation readiness, retention and recovery.
 - **`locked`**: another collect is running; the kernel releases the lock if
   that process dies. There is no stale lock to break.
 - **Failed or interrupted activation** (`activation_write_failed`, or a
-  crash during `activate`). Nothing is cleaned up automatically, and a
-  retry is refused (`already_activated`) because the root is not empty.
-  Inspect the root by hand (`ls -la data/prospective/v1`):
+  crash during `activate`). **This applies only while Collection v1 has
+  never been activated** — the first activation attempt failed and no
+  earlier attempt succeeded (see "If the prospective root is lost or
+  damaged" for what counts as activated). If v1 was ever activated, this
+  procedure never applies: stop collection, restore from the verified
+  backup, and never run `activate` again. Nothing is cleaned up
+  automatically, and a retry is refused (`already_activated`) because the
+  root is not empty. Inspect the root by hand (`ls -la data/prospective/v1`):
   - **only an empty `collect.lock`** (0 bytes; no `activation.json`, no
     `runs.jsonl`, no `ledger/`): the root is not activated — `health`
     reports `prospective_status=not_activated root_exists=yes` and exits 0.
@@ -636,7 +671,7 @@ lists what must survive — see Activation readiness, retention and recovery.
     `activation_write_failed` means the bytes were written but durability
     was not confirmed (e.g. the final fsync failed); whether to accept or
     abandon that activation is a human decision to record, made before any
-    scheduler is installed.
+    scheduler is installed. Once accepted, v1 counts as activated.
 - **Torn or invalid `activation.json`** (e.g. activation interrupted
   mid-write): `collect` refuses (`invalid_manifest`), `health` reports
   `prospective_status=invalid_manifest`, and `activate` refuses
