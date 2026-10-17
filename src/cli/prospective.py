@@ -37,7 +37,16 @@ provenance invalid or unknown, activation refused).
 afterwards); ``1`` for everything else that needs attention
 (``provenance=degraded`` or ``invalid``, corruption, configuration
 mismatch, M2A binding or dependency environment not ``ok``, invalid
-manifest, missing lock).
+or unreadable manifest, missing lock).
+
+``health``'s first line also carries the CURRENT runtime identity, before
+and after activation: ``runtime_python_implementation``,
+``runtime_python_version``, ``runtime_dependencies`` (``ok`` or
+``unavailable``), ``runtime_dependency_fingerprint`` (``none`` when
+unavailable) and ``runtime_import_path_overrides`` (``none`` or the
+``PYTHONHOME``/``PYTHONPATH`` names in effect). Comparing these fields from an
+interactive shell and from the scheduler's environment is the pre-activation
+parity probe; they never change the exit code.
 """
 
 from __future__ import annotations
@@ -230,6 +239,12 @@ def format_health(report: HealthReport) -> list[str]:
         "m2_preregistration_git_commit": report.m2_preregistration_git_commit or "none",
         "m2_binding": report.m2_binding,
         "dependency_environment": report.dependency_environment,
+        "runtime_python_implementation": report.runtime_python_implementation,
+        "runtime_python_version": report.runtime_python_version,
+        "runtime_dependencies": report.runtime_dependencies,
+        "runtime_dependency_fingerprint": report.runtime_dependency_fingerprint or "none",
+        "runtime_import_path_overrides": ",".join(report.runtime_import_path_overrides)
+                                         or "none",
         "universe": ",".join(report.universe),
         "interval": report.interval,
         "basis": report.basis,

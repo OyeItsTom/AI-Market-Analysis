@@ -3,7 +3,15 @@
 <!--
   Prospective Collection v1 - launchd TEMPLATE. Not installed by the repository.
 
-  Install only after an explicitly approved activation (docs/prospective_collection.md):
+  Install only after an explicitly approved activation (docs/prospective_collection.md,
+  "Activation readiness, retention and recovery"):
+    0. __REPOSITORY__ is the dedicated, full (non-shallow) pinned clone - NOT under
+       ~/Desktop, ~/Documents, ~/Downloads or iCloud Drive (a launchd job can be
+       refused access there and then fails or never starts). Before activation the
+       runtime parity probe (the same ProgramArguments running `health`, not
+       `collect`, from a temporary one-shot agent) must print the same runtime_*
+       fields as an interactive run. Add no EnvironmentVariables: PYTHONPATH or
+       PYTHONHOME make every collect refuse.
     1. copy to ~/Library/LaunchAgents/com.ai-market-analysis.prospective-collect.plist
     2. replace every __PLACEHOLDER__ with an absolute path on this machine
     3. mkdir -p __REPOSITORY__/data/prospective/logs   (git-ignored; outside the v1 root)

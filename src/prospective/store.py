@@ -115,11 +115,21 @@ class ProspectiveStore:
         return self.ledger_root.is_dir()
 
     def read_manifest(self) -> ActivationManifest | None:
-        """The manifest, ``None`` when absent, :class:`ManifestCorruption` when unreadable."""
-        if not self.manifest_path.exists():
-            return None
+        """The manifest, ``None`` when absent, :class:`ManifestCorruption` when unreadable.
+
+        Unreadable includes a file-system refusal (permissions, I/O error, a
+        manifest that vanishes between the check and the read): fail closed
+        as the same controlled corruption, never an uncaught ``OSError``.
+        """
         try:
-            return ActivationManifest.from_bytes(self.manifest_path.read_bytes())
+            if not self.manifest_path.exists():
+                return None
+            raw = self.manifest_path.read_bytes()
+        except OSError as exc:
+            raise ManifestCorruption(
+                f"activation manifest unreadable: {type(exc).__name__}") from exc
+        try:
+            return ActivationManifest.from_bytes(raw)
         except RecordError as exc:
             raise ManifestCorruption(f"activation manifest: {exc}") from exc
 

@@ -32,11 +32,14 @@ from .definition import (
     validate_commit_sha,
 )
 from .environment import (
+    IMPORT_PATH_VARIABLES,
     DependencyEnvironmentError,
     GitRepositoryProbe,
     RepositoryProbeError,
     RepositoryState,
     capture_dependency_environment,
+    import_path_overrides,
+    running_python,
 )
 from .identity import (
     AUTHORITATIVE_BRANCH,
@@ -106,6 +109,9 @@ __all__ = [
     "RepositoryProbeError",
     "RepositoryState",
     "capture_dependency_environment",
+    "IMPORT_PATH_VARIABLES",
+    "import_path_overrides",
+    "running_python",
     "AUTHORITATIVE_BRANCH",
     "DEPENDENCY_SCHEMA",
     "M2A_BOUND_PATHS",

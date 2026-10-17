@@ -97,12 +97,14 @@ from src.prospective import (
     SymbolRun,
     capture_dependency_environment,
     first_non_midnight,
+    import_path_overrides,
     in_collection_window,
     is_current_tail,
     is_pre_activation,
     missed_tails,
     new_york_date,
     provenance_policy_for,
+    running_python,
     unknown_report,
     validate_commit_sha,
     verify_provenance,
@@ -202,6 +204,42 @@ def current_dependency_environment() -> DependencyEnvironment:
 
 def _dependencies(source: DependencySource | None) -> DependencyEnvironment:
     return (current_dependency_environment if source is None else source)()
+
+
+def current_import_path_overrides() -> tuple[str, ...]:
+    """``PYTHONPATH`` / ``PYTHONHOME`` if in effect for this interpreter (see the adapter)."""
+    return import_path_overrides()
+
+
+@dataclass(frozen=True)
+class RuntimeIdentity:
+    """The CURRENT runtime as an activation here would record it -- not the manifest's.
+
+    ``environment`` is ``None`` when the dependency environment cannot be
+    verified (for example while ``PYTHONPATH`` is in effect); the Python
+    implementation and version are then the interpreter's own.
+    """
+
+    python_implementation: str
+    python_version: str
+    import_path_overrides: tuple[str, ...]
+    environment: DependencyEnvironment | None
+
+    @property
+    def dependency_fingerprint(self) -> str | None:
+        return None if self.environment is None else self.environment.fingerprint
+
+
+def runtime_identity(source: DependencySource | None = None) -> RuntimeIdentity:
+    """Read-only: the interpreter, its import-path verdict and its dependency environment."""
+    try:
+        environment: DependencyEnvironment | None = _dependencies(source)
+    except DependencyEnvironmentError:
+        environment = None
+    implementation, version = running_python() if environment is None else (
+        environment.python_implementation, environment.python_version)
+    return RuntimeIdentity(implementation, version, current_import_path_overrides(),
+                           environment)
 
 
 def _probe(repository: RepositoryProbe | None) -> RepositoryProbe:
@@ -514,6 +552,13 @@ def dependency_environment_status(
     try:
         current = _dependencies(source)
     except DependencyEnvironmentError:
+        return "unavailable"
+    return _environment_status(current, manifest)
+
+
+def _environment_status(current: DependencyEnvironment | None,
+                        manifest: ActivationManifest) -> str:
+    if current is None:
         return "unavailable"
     recorded = manifest.dependency_environment
     if current != recorded or current.fingerprint != recorded.fingerprint:
@@ -857,6 +902,11 @@ class HealthReport:
     m2_preregistration_git_commit: str | None = None
     m2_binding: str = "unavailable"
     dependency_environment: str = "unavailable"
+    runtime_python_implementation: str = "unavailable"
+    runtime_python_version: str = "unavailable"
+    runtime_dependencies: str = "unavailable"
+    runtime_dependency_fingerprint: str | None = None
+    runtime_import_path_overrides: tuple[str, ...] = ()
     symbols: tuple[SymbolHealth, ...] = ()
     runs_total: int = 0
     runs_completed: int = 0
@@ -903,8 +953,21 @@ def health(
     ``m2_binding`` (local Git, before and after activation) and
     ``dependency_environment`` (installed vs the manifest's; ``unavailable``
     before activation) are ``ok``, ``mismatch`` or ``unavailable``.
+
+    The ``runtime_*`` fields describe the CURRENT interpreter, before and after
+    activation, so an interactive shell and the scheduler's environment can be
+    compared field by field before activating: implementation, version,
+    import-path overrides and the dependency fingerprint an activation here
+    would record (``runtime_dependencies=unavailable`` and no
+    fingerprint when it cannot be verified). They are never the manifest's.
     """
+    runtime = runtime_identity(dependency_environment)
     base = dict(
+        runtime_python_implementation=runtime.python_implementation,
+        runtime_python_version=runtime.python_version,
+        runtime_dependencies="unavailable" if runtime.environment is None else "ok",
+        runtime_dependency_fingerprint=runtime.dependency_fingerprint,
+        runtime_import_path_overrides=runtime.import_path_overrides,
         m2_binding=m2_binding_status(repository),
         root_exists=store.root_exists(),
         ledger_exists=store.ledger_exists(),
@@ -931,7 +994,7 @@ def health(
         manifest_fingerprint_match=not manifest_mismatches(manifest, definition),
         collector_git_commit=manifest.collector_git_commit,
         m2_preregistration_git_commit=manifest.m2_preregistration_git_commit,
-        dependency_environment=dependency_environment_status(manifest, dependency_environment),
+        dependency_environment=_environment_status(runtime.environment, manifest),
     )
     try:
         with store.shared_lock():
@@ -1060,6 +1123,9 @@ __all__ = [
     "dependency_environment_status",
     "activate",
     "current_dependency_environment",
+    "current_import_path_overrides",
+    "RuntimeIdentity",
+    "runtime_identity",
     "CollectionReport",
     "ProvenanceReport",
     "collect",
