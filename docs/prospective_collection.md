@@ -10,10 +10,12 @@ operational visibility. Decision record:
 > future-validation pre-registration is frozen and merged (commit
 > `3dac81078b31c4c5856419faae4f2749cc43ede5`, hard-pinned by M2B — see
 > Activation identity binding). Activation is
-> blocked until (1) the remaining pre-activation hardening is done, (2) a
-> human explicitly approves activation, (3) a
-> dedicated collector clone is checked out at the collector commit (see
-> Scheduler setup), and (4) the local scheduler is set up. The N2
+> blocked until (1) pre-activation hardening is merged and every
+> requirement under **Activation readiness, retention and recovery** is met
+> (dedicated pinned clone outside protected folders, runtime parity probe,
+> verified backup, free disk), (2) a human explicitly approves activation,
+> (3) the dedicated collector clone is checked out at the collector commit
+> (see Scheduler setup), and (4) the local scheduler is set up. The N2
 > provenance hardening is implemented: a write into this ledger by any
 > other tool — e.g. the generic `outcome_refresh` — is **detected**, and
 > collection refuses while it is present (see Provenance). Nothing below
@@ -100,8 +102,11 @@ writing nothing — not even the root directory — when (checked in this order,
 the first failure is the `reason`): either SHA is not a full lower-case
 40-hex SHA (`invalid_commit`); git cannot answer (`repository_unverified`);
 the checked-out branch is not `main` (`not_on_main`, including a detached
-HEAD); the working tree is dirty, including untracked files
-(`dirty_repository`); HEAD is not the collector commit
+HEAD); the working tree is dirty, including untracked files and any tracked
+file hidden from `git status` by an `assume-unchanged` or `skip-worktree`
+index flag, edited or not (`dirty_repository`; the flag is never cleared —
+remove it yourself with `git update-index --no-assume-unchanged` /
+`--no-skip-worktree` and check the file); HEAD is not the collector commit
 (`collector_commit_mismatch`); `refs/remotes/origin/main` is missing
 (`origin_main_missing`) or is not HEAD — behind, ahead or diverged
 (`head_not_origin_main`); the server main is not HEAD
@@ -110,7 +115,8 @@ HEAD); the working tree is dirty, including untracked files
 `m2_working_tree_bytes_mismatch`, `m2_bound_paths_changed`,
 `future_validation_fingerprint_mismatch`; every failing check is printed in
 `details=`); the live code differs from `COLLECTION_V1` (`config_mismatch`);
-the dependency environment cannot be read
+the dependency environment cannot be read or verified — including while
+`PYTHONPATH` or `PYTHONHOME` is in effect
 (`dependency_environment_unavailable`); or the root is not empty
 (`already_activated`). Activation makes no provider call and reads no market
 data. The manifest (schema `prospective_activation_v2`) is described under
@@ -122,8 +128,9 @@ Activation identity binding.
 python -m src.cli.prospective collect
 ```
 
-1. Load and verify the manifest (absent → `not_activated`; unreadable →
-   `invalid_manifest`; both write nothing).
+1. Load and verify the manifest (absent → `not_activated`; unreadable —
+   malformed bytes or a file-system error such as a permission refusal —
+   → `invalid_manifest`; both write nothing).
 2. Take the root lock exclusively, waiting up to 30 s (monotonic clock) for
    a brief `health` reader to finish (`locked` afterwards; `lock_missing`
    if the lock file is gone — no provider, no record, the lock is never
@@ -182,6 +189,9 @@ false corruption. Prints **Level 1** only:
 prospective_status=active root_exists=yes ledger_exists=yes collection_id=… collection_fingerprint=…
   manifest_fingerprint_match=yes live_configuration_match=yes activated_at=… collector_git_commit=…
   m2_preregistration_git_commit=… m2_binding=ok dependency_environment=ok
+  runtime_python_implementation=CPython runtime_python_version=3.11.3
+  runtime_dependencies=ok runtime_dependency_fingerprint=…
+  runtime_import_path_overrides=none
   universe=SPY,QQQ,IWM,TLT,GLD interval=1d basis=raw
 symbol=SPY readable=yes claims_total=… tails_registered=… claims_evaluable=… claims_insufficient=…
   outcomes_matured_h1=… outcomes_matured_h5=… outcomes_matured_h20=… pending=…
@@ -197,6 +207,15 @@ integrity=ok
 A provenance finding adds `provenance_component=`, `provenance_symbol=` and
 `provenance_line=` (the first invalid finding: a component name, a symbol
 and a file line number — never a record's content).
+
+The `runtime_*` fields are the **current** interpreter, before and after
+activation — never the manifest's: implementation and version, whether its
+dependency environment can be verified (`runtime_dependencies=ok`
+or `unavailable`), the fingerprint an activation run here would record
+(`none` when unavailable) and which of `PYTHONHOME`/`PYTHONPATH` is in effect
+(`none` normally). They are what the runtime parity probe compares (see
+Activation readiness); they do not change the exit code. After activation,
+`dependency_environment` compares the same runtime with the manifest.
 
 Exit codes:
 
@@ -349,6 +368,150 @@ Nothing in the supported surfaces can show Level 2 or 3: run records and
 health reports have no field for a price, return or state, run-log numbers
 are integers only, and exception messages are never recorded.
 
+## Activation readiness, retention and recovery
+
+These requirements come from the pre-activation hardening review. They are
+procedure, not code: nothing in the repository creates the clone, installs
+a scheduler, configures a backup or checks free disk. Each must be true —
+and recorded in the activation gate — before the first and only activation.
+
+### Dedicated pinned clone, outside protected folders
+
+The first real activation runs from a **dedicated, full (non-shallow)
+clone** with its own virtualenv — never the development checkout. It must
+**not** live under `~/Desktop`, `~/Documents`, `~/Downloads`, iCloud Drive,
+or any other location whose access macOS grants only to interactive apps
+(privacy/TCC-protected or cloud-synced folders). A launchd job is not an
+interactive app: in such a location the scheduled interpreter can be refused
+access ("Operation not permitted") to the code, the Git objects, the root
+and even the log files, so the job fails or never starts. A cloud-synced
+folder can also evict or replace local files. A neutral location such as
+`~/AI-Market-Analysis-Prospective` is an example only; no path is hard-coded.
+
+Check the clone with `git rev-parse --is-shallow-repository` (`false`) and
+`git cat-file -e 3dac81078b31c4c5856419faae4f2749cc43ede5^{commit}`.
+
+### Runtime parity probe (before installing the scheduler and before activating)
+
+Activation records the dependency environment of the interpreter that runs
+it; every scheduled `collect` must reproduce it exactly or refuse — and a
+refusal on the first scheduled run would end Collection v1. So, **before
+activation**, in the dedicated clone:
+
+1. Run `health` interactively the way activation will be run:
+   `<clone>/.venv/bin/python -m src.cli.prospective health` with the clone
+   as working directory.
+2. Run the **same** command in the environment launchd will use — a
+   temporary, one-shot LaunchAgent with the same `ProgramArguments` (but
+   `health`, not `collect`), the same `WorkingDirectory` and log paths
+   outside the future v1 root — then remove it. This is a probe only: it
+   never runs `collect` or `activate`.
+3. Compare the first lines. These must be identical:
+   `runtime_python_implementation`, `runtime_python_version`,
+   `runtime_dependencies` (must be `ok`),
+   `runtime_dependency_fingerprint`, `runtime_import_path_overrides` (must
+   be `none`), and `m2_binding=ok` (proves the job can read the clone and
+   its Git objects). The probe's stdout/stderr files must have been
+   written (proves the job can write its logs).
+
+Any difference is a blocker: fix the environment, never activate around it.
+
+### Host freeze for the life of Collection v1
+
+Do not casually, while v1 runs: upgrade, reinstall or remove the python.org
+3.11.3 framework the venv points to; replace, recreate or `pip`-modify the
+clone's venv; remove the Command Line Tools / `git`; move or rename the
+clone; set `PYTHONPATH` or `PYTHONHOME` for the job. Each of these makes
+`collect` refuse (fail closed) — it is never absorbed. An intentional
+environment change means Collection v1 stops, and the change goes through
+an explicitly reviewed versioning procedure (new collection version, new
+root, new activation decision); v1's evidence stays as it is.
+
+### Free disk
+
+Before activation the clone's volume must have **at least 5 GB free**, and
+should be kept there. Collection v1 itself is small: measured on synthetic
+ledgers, about 12 KB per symbol per session (claim, run-log and outcome
+lines), i.e. roughly 60 KB per day for five symbols and under 100 MB over
+six years. The margin (about 50×) is for the venv, logs, local backup
+snapshots and the OS. Running out is fail-closed but harmful: an append that
+cannot complete leaves a torn line, and every later `collect` refuses on the
+corrupt file. The threshold is operational only and part of no fingerprint.
+
+### Backup and restore verification (required before activation)
+
+The prospective root is the only copy of evidence that cannot be
+regenerated. Before activation:
+
+- a real backup destination exists and is running (Time Machine, or another
+  local or encrypted mechanism — the mechanism is the operator's choice);
+- it includes the whole dedicated clone **including git-ignored content**
+  (`.venv/`, and after activation `data/prospective/`) and is never Git;
+- a **restore test** has been done: restore or copy the clone to a separate
+  location, then, from that restored copy, run
+  `<restored>/.venv/bin/python -m src.cli.prospective health` (read-only)
+  and check `m2_binding=ok`, `runtime_dependencies=ok` with the
+  same fingerprint, and that the restored clone is non-shallow and contains
+  the M2A commit. Never run `collect` or `activate` in a restored copy and
+  never schedule it.
+
+Immediately after activation, take a backup and repeat the restore test on
+the activated root: the restored copy's `health` must report
+`prospective_status=active` with the same `activated_at` and
+`collector_git_commit`, and `activation.json`, `runs.jsonl` and the ledger
+files must have the same SHA-256 as the originals. Because every file is
+append-only or write-once, a copy taken while no `collect` runs is a
+consistent snapshot.
+
+### Retention contract: what must survive
+
+Verifying — or recovering — the future validation years from now needs,
+exactly:
+
+- `data/prospective/v1/activation.json`, byte for byte;
+- the prefix of `data/prospective/v1/runs.jsonl` recorded at the opening;
+- the prefix of every prospective ledger file
+  (`data/prospective/v1/ledger/<SYM>/1d/raw/{artifacts,outcomes}.jsonl`)
+  recorded at the opening;
+- `data/prospective/v1/validation/<validation_id>/<fingerprint>/unlock.json`
+  and `result.json` (`report.md` can be regenerated from the result);
+- the clone's full, non-shallow Git history, including the M2A commit
+  `3dac81078b31c4c5856419faae4f2749cc43ede5`.
+
+The future-validation snapshot records only the **lengths and SHA-256** of
+those prefixes, not their bytes: it does not archive the evidence. The
+source files must therefore remain available, unmodified up to their
+recorded length, for as long as the result may need to be verified. The
+code only ever appends to them or writes them once; their survival depends
+on the operator and the backup.
+
+### Prohibited maintenance in the dedicated clone (after activation)
+
+> **Never**, in the dedicated clone:
+> - `git clean -x` or `git clean -X` (they delete the git-ignored
+>   `data/prospective/` — the evidence);
+> - delete, move or recreate `data/prospective/`, or delete, re-clone or
+>   recreate the clone;
+> - truncate, rotate, rewrite, "compact" or replace any file under
+>   `data/prospective/v1/` (including `activation.json`);
+> - run `activate` again — for any reason, including after losing the root.
+
+### If the prospective root is lost or damaged
+
+A lost root looks exactly like a never-activated one (`health` then says
+`prospective_status=not_activated` and exits 0), so watch for
+`prospective_status=active` after activation. If the root is missing,
+truncated or damaged:
+
+1. **Stop collection** (unload the LaunchAgent).
+2. **Restore from the verified backup** into the dedicated clone, then
+   check it with `health` as in the restore test.
+3. **Do not run `activate` again.** Re-activating would start a new
+   collection under the same name and silently discard the original
+   evidence. Collection v1 is activated once; if its evidence cannot be
+   restored, v1 ends and anything further is a new, explicitly reviewed
+   collection version.
+
 ## Scheduler setup (after approved activation only)
 
 Template: `config/launchd/com.ai-market-analysis.prospective-collect.plist.example`.
@@ -356,7 +519,10 @@ Template: `config/launchd/com.ai-market-analysis.prospective-collect.plist.examp
 0. **Pinned collector clone.** Real collection runs from a dedicated clone
    of the repository checked out at exactly the collector commit
    recorded in `activation.json`, with its own virtualenv — not from the
-   development checkout. Activation requires that clone to be on its `main`
+   development checkout. It must be a full (non-shallow) clone outside
+   `~/Desktop`, `~/Documents`, `~/Downloads` and iCloud Drive, and the
+   runtime parity probe must have passed before activation (see Activation
+   readiness, retention and recovery). Activation requires that clone to be on its `main`
    branch at the freshly fetched `origin/main` (see `activate`); afterwards
    `collect` only requires HEAD == the collector commit and a clean tree, so
    the clone may stay on `main` (never pulled) or be detached at that
@@ -435,13 +601,21 @@ Template: `config/launchd/com.ai-market-analysis.prospective-collect.plist.examp
 ## Backup
 
 The ledger is the only copy of evidence that cannot be regenerated. Back up
-`data/prospective/` locally (e.g. Time Machine or an encrypted copy) and
-never into Git. Because every file is append-only or write-once, a copy is a
-consistent snapshot when no `collect` is running; `health` verifies a
-restored copy strictly.
+the dedicated clone including `data/prospective/` locally (e.g. Time Machine
+or an encrypted copy) and never into Git. Because every file is append-only
+or write-once, a copy is a consistent snapshot when no `collect` is running;
+`health` verifies a restored copy strictly. A configured backup and a
+verified restore are activation requirements, and the retention contract
+lists what must survive — see Activation readiness, retention and recovery.
 
 ## Failure recovery
 
+- **Root lost, truncated or damaged**: stop collection, restore from the
+  verified backup, **never run `activate` again** — see "If the prospective
+  root is lost or damaged" under Activation readiness.
+- **`dependency_environment_unverified` with `runtime_import_path_overrides`
+  not `none`**: `PYTHONPATH`/`PYTHONHOME` reached the job; remove it from
+  the job's environment. Nothing to repair in the root.
 - **Provider outage / failed symbol**: nothing to do; the retry trigger or
   next day's run continues. Unclaimed days become missed.
 - **`locked`**: another collect is running; the kernel releases the lock if
@@ -569,6 +743,26 @@ scheduler will run `collect`: the pinned clone's virtualenv interpreter,
 the clone's root as working directory (the plist's `WorkingDirectory`), and
 no `PYTHONPATH`. A different interpreter, working directory with extra
 distribution metadata, or path makes `collect` refuse — it never absorbs it.
+Distribution metadata cannot see code that is importable without it, so
+while `PYTHONPATH` or `PYTHONHOME` is set to a non-empty value the
+environment is **unverifiable**: activation refuses
+(`dependency_environment_unavailable`), `collect` refuses
+(`dependency_environment_unverified`, before any provider) and `health`
+reports `runtime_dependencies=unavailable`. Nothing is stripped or
+ignored silently; under `python -E` (which really ignores those variables)
+they are not in effect and do not refuse. An unexpected failure while
+reading the distributions is the same controlled "unavailable/unverified"
+refusal, never a traceback. The schema and the fingerprint are unchanged:
+the variables are checked, never recorded.
+
+**Clean repository.** Wherever this document says clean (activation,
+`collect`'s collector identity, future validation's binding), it means both
+that `git status --porcelain --untracked-files=normal` reports nothing and
+that no tracked file carries an `assume-unchanged` or `skip-worktree` index
+flag (`git ls-files -v` shows only `H`): such a flag hides a file's edits
+from `status`, so a flagged file is never trusted, edited or not. Every Git
+query runs with `core.fsmonitor` disabled. The check reports; it never
+clears a flag or changes Git state.
 
 *Why the whole environment.* Transitive libraries (HTTP, parsing, time
 zones, numerics) can change provider behaviour, timestamps and numbers as

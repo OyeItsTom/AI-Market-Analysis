@@ -91,7 +91,8 @@ IO_MODULES = {"os", "fcntl", "pathlib", "subprocess", "socket", "shutil", "tempf
               "urllib", "requests", "http", "time", "random", "importlib", "platform"}
 ALLOWED_IO = {
     "store.py": {"os", "fcntl", "pathlib", "time"},
-    "environment.py": {"subprocess", "pathlib", "importlib", "platform"},
+    # os: only the refusal-only PYTHONPATH/PYTHONHOME check (pre-activation hardening R3)
+    "environment.py": {"subprocess", "pathlib", "importlib", "platform", "os"},
 }
 
 

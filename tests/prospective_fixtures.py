@@ -222,8 +222,9 @@ def build_matured_root(base: Path, sessions: int) -> Path:
 
 
 def install_offline_guard(monkeypatch) -> None:
-    """No socket, no real yfinance download, no default provider; default probe and
-    dependency source are the passing doubles (never the checkout or the host)."""
+    """No socket, no real yfinance download, no default provider; default probe,
+    dependency source and import-path verdict are the passing doubles (never the
+    checkout or the host)."""
 
     def refuse_connect(self, *args, **kwargs):
         raise AssertionError("network access attempted in an offline test")
@@ -242,6 +243,8 @@ def install_offline_guard(monkeypatch) -> None:
         monkeypatch.setattr(f"{module}.default_repository_probe", ProbeDouble)
     monkeypatch.setattr("src.application.prospective.current_dependency_environment",
                         lambda: DEPENDENCIES)
+    monkeypatch.setattr("src.application.prospective.current_import_path_overrides",
+                        lambda: ())
 
 
 @pytest.fixture(autouse=True)

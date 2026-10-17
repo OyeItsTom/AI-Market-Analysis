@@ -786,12 +786,23 @@ class TestCollectionDrift:
         assert not (tmp_path / "v1").exists()
 
     def test_no_production_module_reads_an_environment_variable(self):
+        """Nothing is configured by the environment. The one exception is the
+        refusal-only import-path check in the adapter (pre-activation hardening
+        R3), which reads exactly PYTHONHOME and PYTHONPATH and can only refuse."""
         for path in [*(REPO / "src" / "prospective").glob("*.py"),
                      REPO / "src" / "application" / "prospective.py",
                      REPO / "src" / "application" / "future_validation.py",
                      REPO / "src" / "cli" / "prospective.py",
                      REPO / "src" / "cli" / "future_validation.py"]:
             module = ast.parse(path.read_text())
+            if path.name == "environment.py" and path.parent.name == "prospective":
+                [function] = [n for n in module.body if isinstance(n, ast.FunctionDef)
+                              and n.name == "import_path_overrides"]
+                module.body.remove(function)
+                reads = {n.attr for n in ast.walk(function) if isinstance(n, ast.Attribute)}
+                assert reads & {"environ", "getenv", "environb", "putenv"} == {"environ"}
+                from src.prospective import IMPORT_PATH_VARIABLES
+                assert IMPORT_PATH_VARIABLES == ("PYTHONHOME", "PYTHONPATH")
             names = {n.attr for n in ast.walk(module) if isinstance(n, ast.Attribute)} | {
                 n.id for n in ast.walk(module) if isinstance(n, ast.Name)}
             assert not names & {"environ", "getenv", "environb", "putenv"}, path.name
